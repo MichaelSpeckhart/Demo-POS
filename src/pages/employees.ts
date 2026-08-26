@@ -25,21 +25,37 @@ export function renderEmployeesPage(state: AppState) {
             <span>${state.employees.length} records</span>
           </div>
           <div class="record-list-items">
-            ${state.employees.map((employee, index) => employeeButton(employee, index, index === state.selectedEmployeeIndex)).join("")}
+            ${state.employees.length === 0 ? `<div class="empty-list">No employees added</div>` : state.employees.map((employee, index) => employeeButton(employee, index, index === state.selectedEmployeeIndex)).join("")}
           </div>
         </div>
-        <div class="form-surface record-form">
+        ${selectedEmployee ? employeeForm(selectedEmployee) : emptyEmployee()}
+      </div>
+    </section>
+  `;
+}
+
+function employeeForm(selectedEmployee: Employee) {
+  return `
+    <div class="form-surface record-form">
           <div class="section-title">
             <h2>Employee Details</h2>
             <span>Comp-U-Sort employee create fields</span>
           </div>
           <div class="form-grid aligned-grid two-column-grid">
-            ${field("employee.employeeNumber", "Employee Number", selectedEmployee?.employeeNumber ?? "", "Used by Comp-U-Sort as the employee login number.")}
-            ${field("employee.employeeName", "Employee Name", selectedEmployee?.employeeName ?? "")}
+            ${field("employee.employeeNumber", "Employee Number", selectedEmployee.employeeNumber, "Used by Comp-U-Sort as the employee login number.")}
+            ${field("employee.employeeName", "Employee Name", selectedEmployee.employeeName)}
           </div>
         </div>
-      </div>
-    </section>
+  `;
+}
+
+function emptyEmployee() {
+  return `
+    <div class="empty-state record-form">
+      <h2>No employee selected</h2>
+      <p>Add an employee when you are ready to enter employee details.</p>
+      <button class="primary-button" data-action="add-employee">Add Employee</button>
+    </div>
   `;
 }
 

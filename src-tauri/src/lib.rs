@@ -554,6 +554,73 @@ fn load_employees(conn: &Connection) -> Result<Vec<Employee>, String> {
 }
 
 #[tauri::command]
+fn save_customer(app: tauri::AppHandle, customer: Customer) -> Result<(), String> {
+    if customer.account_number.trim().is_empty() {
+        return Ok(());
+    }
+
+    let conn = open_db(&app)?;
+    let now = now_epoch_seconds();
+    conn.execute(
+        r#"
+        INSERT INTO customers (
+            account_number, phone_number, first_name, last_name, pin,
+            address1, address2, city, state, zip_code, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(account_number) DO UPDATE SET
+            phone_number = excluded.phone_number,
+            first_name = excluded.first_name,
+            last_name = excluded.last_name,
+            pin = excluded.pin,
+            address1 = excluded.address1,
+            address2 = excluded.address2,
+            city = excluded.city,
+            state = excluded.state,
+            zip_code = excluded.zip_code,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            &customer.account_number,
+            &customer.phone_number,
+            &customer.first_name,
+            &customer.last_name,
+            &customer.pin,
+            &customer.address1,
+            &customer.address2,
+            &customer.city,
+            &customer.state,
+            &customer.zip_code,
+            &now,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_employee(app: tauri::AppHandle, employee: Employee) -> Result<(), String> {
+    if employee.employee_number.trim().is_empty() {
+        return Ok(());
+    }
+
+    let conn = open_db(&app)?;
+    let now = now_epoch_seconds();
+    conn.execute(
+        r#"
+        INSERT INTO employees (employee_number, employee_name, updated_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(employee_number) DO UPDATE SET
+            employee_name = excluded.employee_name,
+            updated_at = excluded.updated_at
+        "#,
+        params![&employee.employee_number, &employee.employee_name, &now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn save_workspace(app: tauri::AppHandle, workspace: WorkspaceData) -> Result<(), String> {
     let mut conn = open_db(&app)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -652,6 +719,10 @@ fn save_workspace(app: tauri::AppHandle, workspace: WorkspaceData) -> Result<(),
     .map_err(|e| e.to_string())?;
 
     for (position, garment) in workspace.garments.iter().enumerate() {
+        if garment.id.trim().is_empty() {
+            continue;
+        }
+
         tx.execute(
             r#"
             INSERT INTO garments (
@@ -1121,6 +1192,8 @@ pub fn run() {
             load_workspace,
             load_ticket_workspace,
             load_customer,
+            save_customer,
+            save_employee,
             save_workspace,
             load_database_summary,
             delete_customer,

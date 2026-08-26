@@ -1,5 +1,5 @@
 import type { AppState } from "../types";
-import { escapeAttribute, escapeHtml, field, pageHeader } from "../ui/html";
+import { escapeAttribute, escapeHtml, field } from "../ui/html";
 
 export function renderTicketPage(state: AppState) {
   const isSpot = state.settings.posSystem === "spot";
@@ -7,17 +7,27 @@ export function renderTicketPage(state: AppState) {
 
   return `
     <section class="page ticket-page">
-      ${pageHeader(
-        "Step 4",
-        isSpot ? "Create Invoice" : "Create Ticket",
-        isSpot
-          ? "SPOT invoice fields are repeated on each ADDITEM row."
-          : isWhiteConveyors
-            ? "These fields map directly to the Comp-U-Sort TICKET_CREATE row."
-            : "These fields map directly to the WinCleaners TICKET_CREATE row."
-      )}
+      <div class="page-heading with-actions">
+        <div>
+          <p class="eyebrow">Step 4</p>
+          <h1>${isSpot ? "Create Invoice" : "Create Ticket"}</h1>
+          <p>${isSpot
+            ? "SPOT invoice fields are repeated on each ADDITEM row."
+            : isWhiteConveyors
+              ? "These fields map directly to the Comp-U-Sort TICKET_CREATE row."
+              : "These fields map directly to the WinCleaners TICKET_CREATE row."}</p>
+        </div>
+        ${state.ticketDraftActive ? "" : `<button class="secondary-button" data-action="add-ticket">+ Add ${isSpot ? "Invoice" : "Ticket"}</button>`}
+      </div>
 
-      <div class="form-surface">
+      ${state.ticketDraftActive ? ticketForm(state, isSpot, isWhiteConveyors) : emptyTicket(isSpot)}
+    </section>
+  `;
+}
+
+function ticketForm(state: AppState, isSpot: boolean, isWhiteConveyors: boolean) {
+  return `
+    <div class="form-surface">
         <div class="section-title">
           <h2>Assignment</h2>
           <span>Connect this ticket to an existing customer</span>
@@ -31,7 +41,6 @@ export function renderTicketPage(state: AppState) {
 
         ${isSpot ? renderSpotTicketSections(state) : renderTicketSections(state, isWhiteConveyors)}
       </div>
-    </section>
   `;
 }
 
@@ -55,6 +64,7 @@ function customerOptions(state: AppState) {
     );
   }
 
+  options.unshift(option("", "No customer selected", !selectedAccount));
   return options.join("");
 }
 
@@ -113,6 +123,18 @@ function renderTicketSections(state: AppState, isWhiteConveyors: boolean) {
       ${field("ticket.plant", "Plant", state.ticket.plant)}
       ${field("ticket.route", "Route", state.ticket.route)}
       ${field("ticket.store", "Store", state.ticket.store)}
+    </div>
+  `;
+}
+
+function emptyTicket(isSpot: boolean) {
+  const label = isSpot ? "Invoice" : "Ticket";
+
+  return `
+    <div class="empty-state">
+      <h2>No ${label.toLowerCase()} selected</h2>
+      <p>Start with an empty ${label.toLowerCase()} record when you are ready to enter one.</p>
+      <button class="primary-button" data-action="add-ticket">Add ${label}</button>
     </div>
   `;
 }

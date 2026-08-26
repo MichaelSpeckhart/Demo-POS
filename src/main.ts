@@ -97,6 +97,8 @@ const state: AppState = {
   ticket: defaultTicket(),
   garments: defaultGarments(),
   employees: defaultEmployees(),
+  customerDraftActive: false,
+  ticketDraftActive: false,
   selectedGarmentIndex: 0,
   selectedEmployeeIndex: 0,
   preview: "",
@@ -183,19 +185,21 @@ function bindEvents() {
     input.addEventListener("input", () => {
       updateValue(input.dataset.bind ?? "", input.value);
       updateLivePreview();
-      if (input.dataset.bind?.startsWith("settings.")) {
+      const bindPath = input.dataset.bind ?? "";
+      if (bindPath.startsWith("settings.")) {
         void saveSettings();
       } else {
-        queueWorkspaceSave();
+        queueCurrentRecordSave(bindPath);
       }
     });
     input.addEventListener("change", () => {
-      updateValue(input.dataset.bind ?? "", input.value);
+      const bindPath = input.dataset.bind ?? "";
+      updateValue(bindPath, input.value);
       updateLivePreview();
-      if (input.dataset.bind?.startsWith("settings.")) {
+      if (bindPath.startsWith("settings.")) {
         void saveSettings();
       } else {
-        void saveWorkspace().then(refreshDatabaseSummary);
+        void saveCurrentRecord(bindPath).then(refreshDatabaseSummary);
       }
     });
   });
@@ -203,10 +207,19 @@ function bindEvents() {
   document.querySelectorAll<HTMLSelectElement>("[data-action='select-customer']").forEach((select) => {
     select.addEventListener("change", async () => {
       const accountNumber = select.value;
+      if (!accountNumber) {
+        state.ticket.customerAccountNumber = "";
+        state.customer = defaultCustomer();
+        state.customerDraftActive = false;
+        state.status = "";
+        render();
+        return;
+      }
       state.ticket.customerAccountNumber = accountNumber;
       const customer = await invoke<Customer | null>("load_customer", { accountNumber });
       if (customer) {
         state.customer = customer;
+        state.customerDraftActive = true;
       }
       state.status = "";
       render();
@@ -218,8 +231,37 @@ function bindEvents() {
   document.querySelectorAll<HTMLSelectElement>("[data-action='select-ticket']").forEach((select) => {
     select.addEventListener("change", async () => {
       const ticketNumber = select.value;
-      if (!ticketNumber) return;
+      if (!ticketNumber) {
+        state.ticket = defaultTicket(state.customer.accountNumber);
+        state.ticketDraftActive = false;
+        state.garments = [];
+        state.selectedGarmentIndex = 0;
+        state.status = "";
+        render();
+        return;
+      }
       await loadTicketWorkspace(ticketNumber);
+      state.status = "";
+      render();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-action='add-customer']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.customer = defaultCustomer();
+      state.customerDraftActive = true;
+      if (!state.ticketDraftActive) {
+        state.ticket = defaultTicket();
+      }
+      state.status = "";
+      render();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-action='add-ticket']").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.ticket = defaultTicket(state.customer.accountNumber);
+      state.ticketDraftActive = true;
       state.status = "";
       render();
     });
@@ -348,6 +390,7 @@ function updateValue(path: string, value: string) {
 
   if (path.startsWith("customer.")) {
     const key = path.replace("customer.", "") as keyof Customer;
+    state.customerDraftActive = true;
     state.customer[key] = value;
     if (key === "accountNumber") {
       state.ticket.customerAccountNumber = value;
@@ -357,6 +400,7 @@ function updateValue(path: string, value: string) {
 
   if (path.startsWith("ticket.")) {
     const key = path.replace("ticket.", "") as keyof Ticket;
+    state.ticketDraftActive = true;
     state.ticket[key] = value;
     return;
   }
@@ -537,27 +581,6 @@ async function loadSettings() {
   }
 }
 
-async function loadWorkspace() {
-  try {
-    const workspace = await invoke<Pick<AppState, "customer" | "ticket" | "garments" | "employees"> | null>(
-      "load_workspace"
-    );
-    if (workspace) {
-      state.customer = workspace.customer;
-      state.ticket = workspace.ticket;
-      if (!state.ticket.customerAccountNumber) {
-        state.ticket.customerAccountNumber = state.customer.accountNumber;
-      }
-      state.garments = workspace.garments;
-      state.employees = workspace.employees;
-      state.selectedGarmentIndex = 0;
-      state.selectedEmployeeIndex = 0;
-    }
-  } catch {
-    // Empty or unavailable database should keep the blank workspace.
-  }
-}
-
 async function loadTicketWorkspace(ticketNumber: string) {
   try {
     const workspace = await invoke<Pick<AppState, "customer" | "ticket" | "garments" | "employees"> | null>(
@@ -567,6 +590,8 @@ async function loadTicketWorkspace(ticketNumber: string) {
     if (workspace) {
       state.customer = workspace.customer;
       state.ticket = workspace.ticket;
+      state.customerDraftActive = true;
+      state.ticketDraftActive = true;
       if (!state.ticket.customerAccountNumber) {
         state.ticket.customerAccountNumber = state.customer.accountNumber;
       }
@@ -582,16 +607,12 @@ async function loadTicketWorkspace(ticketNumber: string) {
 }
 
 async function loadFirstAvailableWorkspace() {
-  const firstTicket = state.databaseSummary?.tickets[0];
-  if (firstTicket) {
-    await loadTicketWorkspace(firstTicket.ticketNumber);
-    return;
-  }
-
   state.customer = defaultCustomer();
   state.ticket = defaultTicket(state.customer.accountNumber);
   state.garments = defaultGarments();
   state.employees = defaultEmployees();
+  state.customerDraftActive = false;
+  state.ticketDraftActive = false;
   state.selectedGarmentIndex = 0;
   state.selectedEmployeeIndex = 0;
   updateLivePreview();
@@ -602,6 +623,31 @@ async function saveSettings() {
     await invoke("save_settings", { settings: state.settings });
   } catch {
     // Settings persistence should not interrupt form editing.
+  }
+}
+
+async function saveCustomer() {
+  if (!state.customer.accountNumber.trim()) {
+    return;
+  }
+
+  try {
+    await invoke("save_customer", { customer: state.customer });
+  } catch {
+    // Customer editing should continue even if persistence fails.
+  }
+}
+
+async function saveSelectedEmployee() {
+  const employee = state.employees[state.selectedEmployeeIndex];
+  if (!employee?.employeeNumber.trim()) {
+    return;
+  }
+
+  try {
+    await invoke("save_employee", { employee });
+  } catch {
+    // Employee editing should continue even if persistence fails.
   }
 }
 
@@ -624,11 +670,25 @@ async function saveWorkspace() {
   }
 }
 
-function queueWorkspaceSave() {
+function queueCurrentRecordSave(path: string) {
   window.clearTimeout(workspaceSaveTimer);
   workspaceSaveTimer = window.setTimeout(() => {
-    void saveWorkspace().then(refreshDatabaseSummary);
+    void saveCurrentRecord(path).then(refreshDatabaseSummary);
   }, 300);
+}
+
+async function saveCurrentRecord(path: string) {
+  if (path.startsWith("customer.")) {
+    await saveCustomer();
+    return;
+  }
+
+  if (path.startsWith("employee.")) {
+    await saveSelectedEmployee();
+    return;
+  }
+
+  await saveWorkspace();
 }
 
 function cancelQueuedWorkspaceSave() {
@@ -662,7 +722,6 @@ function setStatus(message: string, kind: "success" | "error" | "neutral") {
 }
 
 void loadSettings()
-  .then(loadWorkspace)
   .then(refreshDatabaseSummary)
   .then(() => {
     bindGlobalDeleteHandler();

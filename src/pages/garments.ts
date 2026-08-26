@@ -24,10 +24,23 @@ export function renderGarmentsPage(state: AppState) {
             <span>${state.garments.length} records</span>
           </div>
           <div class="record-list-items">
-            ${state.garments.map((garment, index) => garmentButton(garment, index, index === state.selectedGarmentIndex)).join("")}
+            ${state.garments.length === 0 ? `<div class="empty-list">No garments added</div>` : state.garments.map((garment, index) => garmentButton(garment, index, index === state.selectedGarmentIndex)).join("")}
           </div>
         </div>
-        <div class="form-surface record-form">
+        ${selectedGarment ? garmentForm(state, selectedGarment, isSpot, isWhiteConveyors) : emptyGarment()}
+      </div>
+    </section>
+  `;
+}
+
+function garmentForm(
+  state: AppState,
+  selectedGarment: Garment,
+  isSpot: boolean,
+  isWhiteConveyors: boolean
+) {
+  return `
+    <div class="form-surface record-form">
           <div class="section-title">
             <h2>Ticket Assignment</h2>
             <span>Choose which ticket owns these garment rows</span>
@@ -44,17 +57,25 @@ export function renderGarmentsPage(state: AppState) {
             <span>${isSpot ? "SPOT item fields" : isWhiteConveyors ? "Comp-U-Sort garment fields" : "WinCleaners garment fields"}</span>
           </div>
           <div class="form-grid aligned-grid two-column-grid">
-            ${field("garment.id", "Garment ID", selectedGarment?.id ?? "")}
-            ${field("garment.description", "Description", selectedGarment?.description ?? "")}
+            ${field("garment.id", "Garment ID", selectedGarment.id)}
+            ${field("garment.description", "Description", selectedGarment.description)}
             ${isSpot
-              ? field("garment.slotOccupancy", "Slot Occupancy", selectedGarment?.slotOccupancy ?? "")
+              ? field("garment.slotOccupancy", "Slot Occupancy", selectedGarment.slotOccupancy)
               : isWhiteConveyors
                 ? renderWhiteConveyorsGarmentFields(selectedGarment)
                 : renderWinCleanersGarmentFields(selectedGarment)}
           </div>
         </div>
-      </div>
-    </section>
+  `;
+}
+
+function emptyGarment() {
+  return `
+    <div class="empty-state record-form">
+      <h2>No garment selected</h2>
+      <p>Add a garment when you are ready to enter item details.</p>
+      <button class="primary-button" data-action="add-garment">Add Garment</button>
+    </div>
   `;
 }
 
@@ -78,6 +99,7 @@ function ticketOptions(state: AppState) {
     options.unshift(option(state.ticket.ticketNumber, `${state.ticket.ticketNumber} - ${display}`, true));
   }
 
+  options.unshift(option("", "No ticket selected", !state.ticket.ticketNumber));
   return options.join("");
 }
 

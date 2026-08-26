@@ -85,6 +85,8 @@ export interface AppState {
   ticket: Ticket;
   garments: Garment[];
   employees: Employee[];
+  customerDraftActive: boolean;
+  ticketDraftActive: boolean;
   selectedGarmentIndex: number;
   selectedEmployeeIndex: number;
   preview: string;

@@ -1,5 +1,5 @@
 import type { AppState } from "../types";
-import { field, pageHeader } from "../ui/html";
+import { field } from "../ui/html";
 
 export function renderCustomerPage(state: AppState) {
   const isSpot = state.settings.posSystem === "spot";
@@ -7,17 +7,27 @@ export function renderCustomerPage(state: AppState) {
 
   return `
     <section class="page customer-page">
-      ${pageHeader(
-        "Step 3",
-        "Create Customer",
-        isSpot
-          ? "SPOT repeats customer details on every ADDITEM row."
-          : isWhiteConveyors
-            ? "These fields map directly to the Comp-U-Sort CUSTOMER_CREATE row."
-            : "These fields map directly to the WinCleaners CUSTOMER_CREATE row."
-      )}
+      <div class="page-heading with-actions">
+        <div>
+          <p class="eyebrow">Step 3</p>
+          <h1>Create Customer</h1>
+          <p>${isSpot
+            ? "SPOT repeats customer details on every ADDITEM row."
+            : isWhiteConveyors
+              ? "These fields map directly to the Comp-U-Sort CUSTOMER_CREATE row."
+              : "These fields map directly to the WinCleaners CUSTOMER_CREATE row."}</p>
+        </div>
+        ${state.customerDraftActive ? "" : `<button class="secondary-button" data-action="add-customer">+ Add Customer</button>`}
+      </div>
 
-      <div class="form-surface">
+      ${state.customerDraftActive ? customerForm(state, isSpot) : emptyCustomer()}
+    </section>
+  `;
+}
+
+function customerForm(state: AppState, isSpot: boolean) {
+  return `
+    <div class="form-surface">
         <div class="section-title">
           <h2>Customer Profile</h2>
           <span>Identity and contact fields</span>
@@ -47,6 +57,15 @@ export function renderCustomerPage(state: AppState) {
           ${field("customer.zipCode", "Zip Code", state.customer.zipCode)}
         </div>
       </div>
-    </section>
+  `;
+}
+
+function emptyCustomer() {
+  return `
+    <div class="empty-state">
+      <h2>No customer selected</h2>
+      <p>Start with an empty customer record when you are ready to enter one.</p>
+      <button class="primary-button" data-action="add-customer">Add Customer</button>
+    </div>
   `;
 }

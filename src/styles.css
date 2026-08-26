@@ -487,6 +487,43 @@ select:focus {
   min-width: 0;
 }
 
+.empty-state {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 10px;
+  min-height: 240px;
+  max-width: 720px;
+  padding: 22px;
+  border: 1px dashed #c8d1db;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.empty-state h2 {
+  margin: 0;
+  color: #203242;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.empty-state p {
+  max-width: 460px;
+  margin: 0;
+  color: #647386;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.empty-list {
+  padding: 14px;
+  border: 1px dashed #c8d1db;
+  border-radius: 8px;
+  color: #647386;
+  background: #ffffff;
+  font-size: 13px;
+}
+
 .garment-button {
   display: grid;
   gap: 4px;
