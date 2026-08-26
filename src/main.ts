@@ -661,7 +661,9 @@ async function exportFile() {
   };
 
   try {
-    if (!isDeleteExportMode()) {
+    if (isEmployeeOnlyCreateExport()) {
+      await saveWhiteConveyorsEmployees();
+    } else if (!isDeleteExportMode()) {
       await saveWorkspace();
     }
     const path = await invoke<string>("write_export_file", { request });
@@ -775,6 +777,9 @@ function validateExport() {
     return "Add at least one record before exporting.";
   }
   if (!state.settings.outputDirectory.trim()) return "Choose an output folder before exporting.";
+  if (isEmployeeOnlyCreateExport()) {
+    return "";
+  }
   if (!state.customer.accountNumber.trim()) return "Customer account number is required.";
   if (!state.ticket.ticketNumber.trim()) return "Ticket number is required.";
   if (state.settings.posSystem === "spot") {
@@ -898,6 +903,20 @@ async function saveSelectedEmployee() {
   }
 }
 
+async function saveWhiteConveyorsEmployees() {
+  for (const employee of state.employees) {
+    if (!employee.employeeNumber.trim()) {
+      continue;
+    }
+
+    try {
+      await invoke("save_employee", { employee });
+    } catch {
+      // Export should still be attempted even if local persistence fails.
+    }
+  }
+}
+
 async function saveWorkspace() {
   if (!state.customer.accountNumber.trim() || !state.ticket.ticketNumber.trim()) {
     return;
@@ -984,6 +1003,17 @@ function isExportOperation(value: string): value is ExportOperation {
 
 function isDeleteExportMode() {
   return state.settings.posSystem === "whiteconveyors" && state.settings.exportOperation !== "create";
+}
+
+function isEmployeeOnlyCreateExport() {
+  return (
+    state.settings.posSystem === "whiteconveyors" &&
+    state.settings.exportOperation === "create" &&
+    !state.customer.accountNumber.trim() &&
+    !state.ticket.ticketNumber.trim() &&
+    !state.garments.some((garment) => garment.id.trim()) &&
+    state.employees.some((employee) => employee.employeeNumber.trim())
+  );
 }
 
 function setStatus(message: string, kind: "success" | "error" | "neutral") {
