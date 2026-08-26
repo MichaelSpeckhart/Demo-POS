@@ -455,6 +455,7 @@ async function exportFile() {
     await saveWorkspace();
     const path = await invoke<string>("write_export_file", { request });
     await refreshDatabaseSummary();
+    resetWorkspaceDraft();
     setStatus(`Wrote ${path}`, "success");
   } catch (error) {
     setStatus(`Export failed: ${String(error)}`, "error");
@@ -611,6 +612,10 @@ async function loadTicketWorkspace(ticketNumber: string) {
 }
 
 async function loadFirstAvailableWorkspace() {
+  resetWorkspaceDraft();
+}
+
+function resetWorkspaceDraft() {
   state.customer = defaultCustomer();
   state.ticket = defaultTicket(state.customer.accountNumber);
   state.garments = defaultGarments();
