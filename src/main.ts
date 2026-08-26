@@ -30,60 +30,64 @@ const defaultSettings: AppSettings = {
 
 function defaultCustomer(): Customer {
   return {
-    accountNumber: "14684",
-    phoneNumber: "555-0104",
-    firstName: "Alex",
-    lastName: "Rivera",
-    pin: "1234",
-    address1: "100 Main St",
+    accountNumber: "",
+    phoneNumber: "",
+    firstName: "",
+    lastName: "",
+    pin: "",
+    address1: "",
     address2: "",
-    city: "Rochester",
-    state: "NY",
-    zipCode: "14604",
+    city: "",
+    state: "",
+    zipCode: "",
   };
 }
 
-function defaultTicket(customerAccountNumber = "14684"): Ticket {
+function defaultTicket(customerAccountNumber = ""): Ticket {
   return {
     customerAccountNumber,
-    ticketNumber: "01040363",
-    fullInvoiceNumber: ".DCDC03-090374",
-    displayInvoiceNumber: "03-090374",
-    balanceDue: "12.34",
-    dropoffDateTime: "2025-04-18T14:27:49",
-    promisedDateTime: "2025-04-22T17:00:00",
-    comments: "Do not crease",
-    readyDate: "04/03/2026",
-    readyTime: "05:00:00 PM",
-    plant: "01",
-    route: "1111",
-    routeStop: "23",
-    store: "01",
+    ticketNumber: "",
+    fullInvoiceNumber: "",
+    displayInvoiceNumber: "",
+    balanceDue: "",
+    dropoffDateTime: "",
+    promisedDateTime: "",
+    comments: "",
+    readyDate: "",
+    readyTime: "",
+    plant: "",
+    route: "",
+    routeStop: "",
+    store: "",
   };
 }
 
 function defaultGarments(): Garment[] {
-  return [
-    {
-      id: "T1476237",
-      description: "Ld Bag",
-      slotOccupancy: "33",
-      servicePrice: "1",
-      serviceType: "LD",
-      garmentType: "T001",
-      color: "Red",
-      fabric: "F001",
-    },
-  ];
+  return [];
+}
+
+function blankGarment(): Garment {
+  return {
+    id: "",
+    description: "",
+    slotOccupancy: "",
+    servicePrice: "",
+    serviceType: "",
+    garmentType: "",
+    color: "",
+    fabric: "",
+  };
 }
 
 function defaultEmployees(): Employee[] {
-  return [
-    {
-      employeeNumber: "9001",
-      employeeName: "Load Station 1",
-    },
-  ];
+  return [];
+}
+
+function blankEmployee(): Employee {
+  return {
+    employeeNumber: "",
+    employeeName: "",
+  };
 }
 
 const state: AppState = {
@@ -271,31 +275,17 @@ function bindEvents() {
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='add-garment']")?.addEventListener("click", () => {
-    state.garments.push({
-      id: `T${Math.floor(1000000 + Math.random() * 9000000)}`,
-      description: "Pressed Shirt",
-      slotOccupancy: String(30 + state.garments.length),
-      servicePrice: "1",
-      serviceType: "DC",
-      garmentType: "",
-      color: "Blue",
-      fabric: "",
-    });
+    state.garments.push(blankGarment());
     state.selectedGarmentIndex = state.garments.length - 1;
     state.status = "";
     render();
-    void saveWorkspace().then(refreshDatabaseSummary);
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='add-employee']")?.addEventListener("click", () => {
-    state.employees.push({
-      employeeNumber: String(9001 + state.employees.length),
-      employeeName: "",
-    });
+    state.employees.push(blankEmployee());
     state.selectedEmployeeIndex = state.employees.length - 1;
     state.status = "";
     render();
-    void saveWorkspace().then(refreshDatabaseSummary);
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='export']")?.addEventListener("click", () => {
@@ -492,9 +482,6 @@ async function deleteEmployee(employeeNumber: string) {
     render();
     await invoke("delete_employee", { request: { employeeNumber } });
     state.employees = state.employees.filter((employee) => employee.employeeNumber !== employeeNumber);
-    if (state.employees.length === 0) {
-      state.employees = defaultEmployees();
-    }
     state.selectedEmployeeIndex = Math.min(state.selectedEmployeeIndex, Math.max(state.employees.length - 1, 0));
     await refreshDatabaseSummary();
     state.status = `Deleted employee ${employeeNumber}`;
@@ -561,13 +548,13 @@ async function loadWorkspace() {
       if (!state.ticket.customerAccountNumber) {
         state.ticket.customerAccountNumber = state.customer.accountNumber;
       }
-      state.garments = workspace.garments.length > 0 ? workspace.garments : state.garments;
-      state.employees = workspace.employees.length > 0 ? workspace.employees : state.employees;
+      state.garments = workspace.garments;
+      state.employees = workspace.employees;
       state.selectedGarmentIndex = 0;
       state.selectedEmployeeIndex = 0;
     }
   } catch {
-    // Empty or unavailable database should fall back to the sample workspace.
+    // Empty or unavailable database should keep the blank workspace.
   }
 }
 
@@ -584,7 +571,7 @@ async function loadTicketWorkspace(ticketNumber: string) {
         state.ticket.customerAccountNumber = state.customer.accountNumber;
       }
       state.garments = workspace.garments.length > 0 ? workspace.garments : [];
-      state.employees = workspace.employees.length > 0 ? workspace.employees : state.employees;
+      state.employees = workspace.employees;
       state.selectedGarmentIndex = 0;
       state.selectedEmployeeIndex = 0;
       updateLivePreview();
@@ -619,6 +606,10 @@ async function saveSettings() {
 }
 
 async function saveWorkspace() {
+  if (!state.customer.accountNumber.trim() || !state.ticket.ticketNumber.trim()) {
+    return;
+  }
+
   try {
     await invoke("save_workspace", {
       workspace: {
