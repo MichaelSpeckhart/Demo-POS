@@ -17,7 +17,7 @@ export const whiteConveyorsAdapter: PosAdapter = {
     const accountNumber = customer.accountNumber.trim();
 
     if (operation !== "create") {
-      return formatDeleteExport(operation, accountNumber, ticket, garments, date, time);
+      return formatDeleteExport(operation, accountNumber, ticket, garments, employees, date, time);
     }
 
     const rows: string[][] = [
@@ -52,6 +52,7 @@ function formatDeleteExport(
   accountNumber: string,
   ticket: Ticket,
   garments: Garment[],
+  employees: Employee[],
   date: string,
   time: string
 ) {
@@ -63,6 +64,14 @@ function formatDeleteExport(
   if (operation === "ticketDelete") {
     if (!accountNumber || !ticket.ticketNumber.trim()) return "";
     return toQuotedCsvRow(ticketDeleteRow(accountNumber, ticket.ticketNumber, date, time)) + "\r\n";
+  }
+
+  if (operation === "employeeDelete") {
+    const rows = employees
+      .filter((employee) => employee.employeeNumber.trim())
+      .map((employee) => employeeDeleteRow(employee.employeeNumber, date, time));
+
+    return rows.length === 0 ? "" : rows.map(toQuotedCsvRow).join("\r\n") + "\r\n";
   }
 
   const rows = garments
@@ -172,6 +181,15 @@ function garmentDeleteRow(
     accountNumber,
     ticketNumber,
     garmentNumber,
+    date,
+    time,
+  ];
+}
+
+function employeeDeleteRow(employeeNumber: string, date: string, time: string) {
+  return [
+    "EMPLOYEE_DELETE",
+    employeeNumber,
     date,
     time,
   ];

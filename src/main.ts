@@ -15,11 +15,15 @@ import type {
   AppSettings,
   AppState,
   Customer,
+  CustomerRecord,
   Employee,
+  EmployeeRecord,
   ExportOperation,
   Garment,
+  GarmentRecord,
   PageId,
   Ticket,
+  TicketRecord,
   WriteExportRequest,
 } from "./types";
 
@@ -196,9 +200,34 @@ function bindEvents() {
       if (isExportOperation(operation)) {
         state.settings.exportOperation = operation;
         state.status = "";
+        resetWorkspaceDraft();
         render();
         void saveSettings();
       }
+    });
+  });
+
+  document.querySelectorAll<HTMLSelectElement>("[data-action='select-delete-customer']").forEach((select) => {
+    select.addEventListener("change", () => {
+      selectCustomerDeleteTarget(select.value);
+    });
+  });
+
+  document.querySelectorAll<HTMLSelectElement>("[data-action='select-delete-ticket']").forEach((select) => {
+    select.addEventListener("change", () => {
+      selectTicketDeleteTarget(select.value);
+    });
+  });
+
+  document.querySelectorAll<HTMLSelectElement>("[data-action='select-delete-garment']").forEach((select) => {
+    select.addEventListener("change", () => {
+      selectGarmentDeleteTarget(select.value);
+    });
+  });
+
+  document.querySelectorAll<HTMLSelectElement>("[data-action='select-delete-employee']").forEach((select) => {
+    select.addEventListener("change", () => {
+      selectEmployeeDeleteTarget(select.value);
     });
   });
 
@@ -446,6 +475,157 @@ function updateValue(path: string, value: string) {
   }
 }
 
+function selectCustomerDeleteTarget(accountNumber: string) {
+  const row = state.databaseSummary?.customers.find((customer) => customer.accountNumber === accountNumber);
+  if (!row) {
+    resetWorkspaceDraft();
+    render();
+    return;
+  }
+
+  state.customer = customerFromRecord(row);
+  state.ticket = defaultTicket(row.accountNumber);
+  state.garments = [];
+  state.employees = [];
+  state.customerDraftActive = true;
+  state.ticketDraftActive = false;
+  state.selectedGarmentIndex = 0;
+  state.selectedEmployeeIndex = 0;
+  state.status = "";
+  render();
+}
+
+function selectTicketDeleteTarget(ticketNumber: string) {
+  const row = state.databaseSummary?.tickets.find((ticket) => ticket.ticketNumber === ticketNumber);
+  if (!row) {
+    resetWorkspaceDraft();
+    render();
+    return;
+  }
+
+  setTicketDeleteTarget(row);
+  state.garments = [];
+  state.employees = [];
+  state.status = "";
+  render();
+}
+
+function selectGarmentDeleteTarget(value: string) {
+  const [ticketNumber, garmentId] = value.split("::");
+  const row = state.databaseSummary?.garments.find(
+    (garment) => garment.ticketNumber === ticketNumber && garment.garmentId === garmentId
+  );
+  if (!row) {
+    resetWorkspaceDraft();
+    render();
+    return;
+  }
+
+  const ticket = state.databaseSummary?.tickets.find((record) => record.ticketNumber === row.ticketNumber);
+  if (ticket) {
+    setTicketDeleteTarget(ticket);
+  } else {
+    state.customer = defaultCustomer();
+    state.ticket = defaultTicket();
+    state.ticket.ticketNumber = row.ticketNumber;
+    state.ticketDraftActive = true;
+  }
+
+  state.garments = [garmentFromRecord(row)];
+  state.employees = [];
+  state.selectedGarmentIndex = 0;
+  state.selectedEmployeeIndex = 0;
+  state.status = "";
+  render();
+}
+
+function selectEmployeeDeleteTarget(employeeNumber: string) {
+  const row = state.databaseSummary?.employees.find((employee) => employee.employeeNumber === employeeNumber);
+  if (!row) {
+    resetWorkspaceDraft();
+    render();
+    return;
+  }
+
+  state.customer = defaultCustomer();
+  state.ticket = defaultTicket();
+  state.garments = [];
+  state.employees = [employeeFromRecord(row)];
+  state.customerDraftActive = false;
+  state.ticketDraftActive = false;
+  state.selectedGarmentIndex = 0;
+  state.selectedEmployeeIndex = 0;
+  state.status = "";
+  render();
+}
+
+function setTicketDeleteTarget(row: TicketRecord) {
+  const customer = state.databaseSummary?.customers.find(
+    (record) => record.accountNumber === row.customerAccountNumber
+  );
+  state.customer = customer ? customerFromRecord(customer) : defaultCustomer();
+  state.customer.accountNumber = row.customerAccountNumber;
+  state.ticket = ticketFromRecord(row);
+  state.customerDraftActive = true;
+  state.ticketDraftActive = true;
+  state.selectedGarmentIndex = 0;
+  state.selectedEmployeeIndex = 0;
+}
+
+function customerFromRecord(row: CustomerRecord): Customer {
+  return {
+    accountNumber: row.accountNumber,
+    phoneNumber: row.phoneNumber,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    pin: row.pin,
+    address1: row.address1,
+    address2: row.address2,
+    city: row.city,
+    state: row.state,
+    zipCode: row.zipCode,
+  };
+}
+
+function ticketFromRecord(row: TicketRecord): Ticket {
+  return {
+    customerAccountNumber: row.customerAccountNumber,
+    ticketNumber: row.ticketNumber,
+    fullInvoiceNumber: row.fullInvoiceNumber,
+    displayInvoiceNumber: row.displayInvoiceNumber,
+    balanceDue: "",
+    dropoffDateTime: "",
+    promisedDateTime: row.promisedDateTime,
+    comments: "",
+    readyDate: row.readyDate,
+    readyTime: row.readyTime,
+    plant: "",
+    route: "",
+    routeStop: "",
+    store: "",
+  };
+}
+
+function garmentFromRecord(row: GarmentRecord): Garment {
+  return {
+    id: row.garmentId,
+    description: row.description,
+    slotOccupancy: row.slotOccupancy,
+    servicePrice: "",
+    serviceType: row.serviceType,
+    garmentType: row.garmentType,
+    color: row.color,
+    fabric: row.fabric,
+  };
+}
+
+function employeeFromRecord(row: EmployeeRecord): Employee {
+  return {
+    employeeNumber: row.employeeNumber,
+    employeeName: row.employeeName,
+  };
+}
+
 async function exportFile() {
   const validationError = validateExport();
   if (validationError) {
@@ -572,6 +752,12 @@ async function deleteEmployee(employeeNumber: string) {
 function validateExport() {
   if (state.settings.posSystem === "whiteconveyors" && state.settings.exportOperation !== "create") {
     if (!state.settings.outputDirectory.trim()) return "Choose an output folder before exporting.";
+    if (state.settings.exportOperation === "employeeDelete") {
+      if (!state.employees.some((employee) => employee.employeeNumber.trim())) {
+        return "Choose an employee before exporting an employee delete.";
+      }
+      return "";
+    }
     if (!state.customer.accountNumber.trim()) return "Customer account number is required.";
     if (state.settings.exportOperation === "ticketDelete" && !state.ticket.ticketNumber.trim()) {
       return "Ticket number is required.";
@@ -787,7 +973,13 @@ function updateLivePreview() {
 }
 
 function isExportOperation(value: string): value is ExportOperation {
-  return value === "create" || value === "customerDelete" || value === "ticketDelete" || value === "garmentDelete";
+  return (
+    value === "create" ||
+    value === "customerDelete" ||
+    value === "ticketDelete" ||
+    value === "garmentDelete" ||
+    value === "employeeDelete"
+  );
 }
 
 function isDeleteExportMode() {

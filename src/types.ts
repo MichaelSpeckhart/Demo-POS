@@ -1,5 +1,10 @@
 export type PosSystemId = "wincleaners" | "spot" | "whiteconveyors";
-export type ExportOperation = "create" | "customerDelete" | "ticketDelete" | "garmentDelete";
+export type ExportOperation =
+  | "create"
+  | "customerDelete"
+  | "ticketDelete"
+  | "garmentDelete"
+  | "employeeDelete";
 export type PageId =
   | "pos"
   | "folders"
