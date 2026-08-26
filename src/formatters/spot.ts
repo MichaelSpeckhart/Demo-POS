@@ -5,7 +5,7 @@ export const spotAdapter: PosAdapter = {
   id: "spot",
   name: "SPOT",
   summary: "One ADDITEM CSV row per garment",
-  formatExport(customer, ticket, garments) {
+  formatExport(customer, ticket, garments, _employees, _operation) {
     const sentAt = localIsoDateTime(new Date());
     const exportGarments = garments.filter(hasGarmentData);
     if (exportGarments.length === 0) {

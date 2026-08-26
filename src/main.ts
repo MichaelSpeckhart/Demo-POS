@@ -16,6 +16,7 @@ import type {
   AppState,
   Customer,
   Employee,
+  ExportOperation,
   Garment,
   PageId,
   Ticket,
@@ -27,6 +28,7 @@ const defaultSettings: AppSettings = {
   inputDirectory: "",
   outputDirectory: "",
   outputFileName: "",
+  exportOperation: "create",
 };
 
 function defaultCustomer(): Customer {
@@ -131,7 +133,13 @@ const pages: { id: PageId; label: string; render: (state: AppState) => string }[
 
 function render() {
   const adapter = adapters[state.settings.posSystem];
-  state.preview = adapter.formatExport(state.customer, state.ticket, state.garments, state.employees);
+  state.preview = adapter.formatExport(
+    state.customer,
+    state.ticket,
+    state.garments,
+    state.employees,
+    state.settings.exportOperation
+  );
   const activePage = pages.find((page) => page.id === state.activePage) ?? pages[0];
 
   appRoot.innerHTML = `
@@ -178,6 +186,18 @@ function bindEvents() {
         if (page === "database") {
           void refreshDatabaseSummary();
         }
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLSelectElement>("[data-action='select-export-operation']").forEach((select) => {
+    select.addEventListener("change", () => {
+      const operation = select.value;
+      if (isExportOperation(operation)) {
+        state.settings.exportOperation = operation;
+        state.status = "";
+        render();
+        void saveSettings();
       }
     });
   });
@@ -273,6 +293,9 @@ function bindEvents() {
       const pos = button.dataset.pos;
       if (pos === "wincleaners" || pos === "spot" || pos === "whiteconveyors") {
         state.settings.posSystem = pos;
+        if (pos !== "whiteconveyors") {
+          state.settings.exportOperation = "create";
+        }
         state.status = "";
         render();
         void saveSettings();
@@ -448,11 +471,19 @@ async function exportFile() {
     ticketNumber: state.ticket.ticketNumber,
     outputDirectory: state.settings.outputDirectory,
     fileName,
-    contents: adapter.formatExport(state.customer, state.ticket, state.garments, state.employees),
+    contents: adapter.formatExport(
+      state.customer,
+      state.ticket,
+      state.garments,
+      state.employees,
+      state.settings.exportOperation
+    ),
   };
 
   try {
-    await saveWorkspace();
+    if (!isDeleteExportMode()) {
+      await saveWorkspace();
+    }
     const path = await invoke<string>("write_export_file", { request });
     await refreshDatabaseSummary();
     resetWorkspaceDraft();
@@ -539,6 +570,21 @@ async function deleteEmployee(employeeNumber: string) {
 }
 
 function validateExport() {
+  if (state.settings.posSystem === "whiteconveyors" && state.settings.exportOperation !== "create") {
+    if (!state.settings.outputDirectory.trim()) return "Choose an output folder before exporting.";
+    if (!state.customer.accountNumber.trim()) return "Customer account number is required.";
+    if (state.settings.exportOperation === "ticketDelete" && !state.ticket.ticketNumber.trim()) {
+      return "Ticket number is required.";
+    }
+    if (state.settings.exportOperation === "garmentDelete") {
+      if (!state.ticket.ticketNumber.trim()) return "Ticket number is required.";
+      if (!state.garments.some((garment) => garment.id.trim())) {
+        return "Add at least one garment number before exporting a garment delete.";
+      }
+    }
+    return "";
+  }
+
   if (!hasExportData(state.customer, state.ticket, state.garments, state.employees)) {
     return "Add at least one record before exporting.";
   }
@@ -580,6 +626,12 @@ async function loadSettings() {
     const validPosSystems = ["spot", "wincleaners", "whiteconveyors"];
     if (!validPosSystems.includes(state.settings.posSystem)) {
       state.settings.posSystem = "spot";
+    }
+    if (!isExportOperation(state.settings.exportOperation)) {
+      state.settings.exportOperation = "create";
+    }
+    if (state.settings.posSystem !== "whiteconveyors") {
+      state.settings.exportOperation = "create";
     }
   } catch {
     state.settings = { ...defaultSettings };
@@ -687,6 +739,10 @@ function queueCurrentRecordSave(path: string) {
 }
 
 async function saveCurrentRecord(path: string) {
+  if (isDeleteExportMode()) {
+    return;
+  }
+
   if (path.startsWith("customer.")) {
     await saveCustomer();
     return;
@@ -718,10 +774,24 @@ async function refreshDatabaseSummary() {
 
 function updateLivePreview() {
   const adapter = adapters[state.settings.posSystem];
-  state.preview = adapter.formatExport(state.customer, state.ticket, state.garments, state.employees);
+  state.preview = adapter.formatExport(
+    state.customer,
+    state.ticket,
+    state.garments,
+    state.employees,
+    state.settings.exportOperation
+  );
   document.querySelector<HTMLPreElement>(".preview")?.replaceChildren(
     document.createTextNode(state.preview)
   );
+}
+
+function isExportOperation(value: string): value is ExportOperation {
+  return value === "create" || value === "customerDelete" || value === "ticketDelete" || value === "garmentDelete";
+}
+
+function isDeleteExportMode() {
+  return state.settings.posSystem === "whiteconveyors" && state.settings.exportOperation !== "create";
 }
 
 function setStatus(message: string, kind: "success" | "error" | "neutral") {

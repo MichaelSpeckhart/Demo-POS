@@ -5,7 +5,7 @@ export const winCleanersAdapter: PosAdapter = {
   id: "wincleaners",
   name: "WinCleaners",
   summary: "CUSTOMER_CREATE, TICKET_CREATE, and GARMENT_CREATE CSV rows",
-  formatExport(customer, ticket, garments) {
+  formatExport(customer, ticket, garments, _employees, _operation) {
     const now = new Date();
     const date = formatDate(now);
     const time = formatTime(now);

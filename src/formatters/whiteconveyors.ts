@@ -1,4 +1,4 @@
-import type { Customer, Employee, Garment, PosAdapter, Ticket } from "../types";
+import type { Customer, Employee, ExportOperation, Garment, PosAdapter, Ticket } from "../types";
 import {
   hasCustomerData,
   hasEmployeeData,
@@ -10,11 +10,16 @@ export const whiteConveyorsAdapter: PosAdapter = {
   id: "whiteconveyors",
   name: "White Conveyors",
   summary: "Comp-U-Sort POS.txt customer, ticket, and garment transactions",
-  formatExport(customer, ticket, garments, employees) {
+  formatExport(customer, ticket, garments, employees, operation) {
     const now = new Date();
     const date = formatDate(now);
     const time = formatTime(now);
     const accountNumber = customer.accountNumber.trim();
+
+    if (operation !== "create") {
+      return formatDeleteExport(operation, accountNumber, ticket, garments, date, time);
+    }
+
     const rows: string[][] = [
       ...employees
         .filter(hasEmployeeData)
@@ -41,6 +46,35 @@ export const whiteConveyorsAdapter: PosAdapter = {
     return "POS.txt";
   },
 };
+
+function formatDeleteExport(
+  operation: ExportOperation,
+  accountNumber: string,
+  ticket: Ticket,
+  garments: Garment[],
+  date: string,
+  time: string
+) {
+  if (operation === "customerDelete") {
+    if (!accountNumber) return "";
+    return toQuotedCsvRow(customerDeleteRow(accountNumber, date, time)) + "\r\n";
+  }
+
+  if (operation === "ticketDelete") {
+    if (!accountNumber || !ticket.ticketNumber.trim()) return "";
+    return toQuotedCsvRow(ticketDeleteRow(accountNumber, ticket.ticketNumber, date, time)) + "\r\n";
+  }
+
+  const rows = garments
+    .filter((garment) => garment.id.trim())
+    .map((garment) => garmentDeleteRow(accountNumber, ticket.ticketNumber, garment.id, date, time));
+
+  if (!accountNumber || !ticket.ticketNumber.trim() || rows.length === 0) {
+    return "";
+  }
+
+  return rows.map(toQuotedCsvRow).join("\r\n") + "\r\n";
+}
 
 function employeeCreateRow(employee: Employee, date: string, time: string) {
   return [
@@ -102,6 +136,42 @@ function garmentCreateRow(
     garment.garmentType,
     garment.color,
     garment.fabric,
+    date,
+    time,
+  ];
+}
+
+function customerDeleteRow(accountNumber: string, date: string, time: string) {
+  return [
+    "CUSTOMER_DELETE",
+    accountNumber,
+    date,
+    time,
+  ];
+}
+
+function ticketDeleteRow(accountNumber: string, ticketNumber: string, date: string, time: string) {
+  return [
+    "TICKET_DELETE",
+    accountNumber,
+    ticketNumber,
+    date,
+    time,
+  ];
+}
+
+function garmentDeleteRow(
+  accountNumber: string,
+  ticketNumber: string,
+  garmentNumber: string,
+  date: string,
+  time: string
+) {
+  return [
+    "GARMENT_DELETE",
+    accountNumber,
+    ticketNumber,
+    garmentNumber,
     date,
     time,
   ];

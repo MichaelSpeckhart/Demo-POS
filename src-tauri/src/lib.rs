@@ -16,6 +16,8 @@ struct AppSettings {
     output_directory: String,
     #[serde(default)]
     output_file_name: String,
+    #[serde(default = "default_export_operation")]
+    export_operation: String,
 }
 
 impl Default for AppSettings {
@@ -25,8 +27,13 @@ impl Default for AppSettings {
             input_directory: String::new(),
             output_directory: String::new(),
             output_file_name: String::new(),
+            export_operation: default_export_operation(),
         }
     }
+}
+
+fn default_export_operation() -> String {
+    "create".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

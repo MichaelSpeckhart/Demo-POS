@@ -1,4 +1,5 @@
 export type PosSystemId = "wincleaners" | "spot" | "whiteconveyors";
+export type ExportOperation = "create" | "customerDelete" | "ticketDelete" | "garmentDelete";
 export type PageId =
   | "pos"
   | "folders"
@@ -14,6 +15,7 @@ export interface AppSettings {
   inputDirectory: string;
   outputDirectory: string;
   outputFileName: string;
+  exportOperation: ExportOperation;
 }
 
 export interface Customer {
@@ -74,7 +76,13 @@ export interface PosAdapter {
   id: PosSystemId;
   name: string;
   summary: string;
-  formatExport(customer: Customer, ticket: Ticket, garments: Garment[], employees: Employee[]): string;
+  formatExport(
+    customer: Customer,
+    ticket: Ticket,
+    garments: Garment[],
+    employees: Employee[],
+    operation: ExportOperation
+  ): string;
   fileName(ticket: Ticket, timestamp: Date): string;
 }
 
