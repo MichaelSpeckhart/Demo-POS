@@ -1,4 +1,10 @@
 import type { Customer, Employee, Garment, PosAdapter, Ticket } from "../types";
+import {
+  hasCustomerData,
+  hasEmployeeData,
+  hasGarmentData,
+  hasTicketData,
+} from "./recordPresence";
 
 export const whiteConveyorsAdapter: PosAdapter = {
   id: "whiteconveyors",
@@ -9,16 +15,27 @@ export const whiteConveyorsAdapter: PosAdapter = {
     const date = formatDate(now);
     const time = formatTime(now);
     const accountNumber = customer.accountNumber.trim();
-    const rows = [
+    const rows: string[][] = [
       ...employees
-        .filter((employee) => employee.employeeNumber.trim())
+        .filter(hasEmployeeData)
         .map((employee) => employeeCreateRow(employee, date, time)),
-      customerCreateRow(customer, accountNumber, date, time),
-      ticketCreateRow(accountNumber, ticket, date, time),
-      ...garments.map((garment) => garmentCreateRow(accountNumber, ticket, garment, date, time)),
     ];
 
-    return rows.map(toQuotedCsvRow).join("\r\n") + "\r\n";
+    if (hasCustomerData(customer)) {
+      rows.push(customerCreateRow(customer, accountNumber, date, time));
+    }
+
+    if (hasTicketData(ticket)) {
+      rows.push(ticketCreateRow(accountNumber, ticket, date, time));
+    }
+
+    rows.push(
+      ...garments
+        .filter(hasGarmentData)
+        .map((garment) => garmentCreateRow(accountNumber, ticket, garment, date, time))
+    );
+
+    return rows.length === 0 ? "" : rows.map(toQuotedCsvRow).join("\r\n") + "\r\n";
   },
   fileName() {
     return "POS.txt";

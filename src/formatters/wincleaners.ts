@@ -1,4 +1,5 @@
 import type { Garment, PosAdapter, Ticket } from "../types";
+import { hasCustomerData, hasGarmentData, hasTicketData } from "./recordPresence";
 
 export const winCleanersAdapter: PosAdapter = {
   id: "wincleaners",
@@ -9,8 +10,10 @@ export const winCleanersAdapter: PosAdapter = {
     const date = formatDate(now);
     const time = formatTime(now);
     const customerId = formatCustomerId(customer.accountNumber);
-    const rows = [
-      [
+    const rows: string[][] = [];
+
+    if (hasCustomerData(customer)) {
+      rows.push([
         "CUSTOMER_CREATE",
         customerId,
         customer.phoneNumber,
@@ -23,12 +26,20 @@ export const winCleanersAdapter: PosAdapter = {
         customer.zipCode,
         date,
         time,
-      ],
-      ticketCreateRow(customerId, ticket, date, time),
-      ...garments.map((garment) => garmentCreateRow(customerId, ticket, garment, date, time)),
-    ];
+      ]);
+    }
 
-    return rows.map(toCsvRow).join("\n") + "\n";
+    if (hasTicketData(ticket)) {
+      rows.push(ticketCreateRow(customerId, ticket, date, time));
+    }
+
+    rows.push(
+      ...garments
+        .filter(hasGarmentData)
+        .map((garment) => garmentCreateRow(customerId, ticket, garment, date, time))
+    );
+
+    return rows.length === 0 ? "" : rows.map(toCsvRow).join("\n") + "\n";
   },
   fileName(ticket, timestamp) {
     return `wincleaners_${safeName(ticket.ticketNumber)}_${fileTimestamp(timestamp)}.csv`;

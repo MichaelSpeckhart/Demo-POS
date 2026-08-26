@@ -1,4 +1,5 @@
 import type { Customer, Garment, PosAdapter, Ticket } from "../types";
+import { hasGarmentData } from "./recordPresence";
 
 export const spotAdapter: PosAdapter = {
   id: "spot",
@@ -6,8 +7,13 @@ export const spotAdapter: PosAdapter = {
   summary: "One ADDITEM CSV row per garment",
   formatExport(customer, ticket, garments) {
     const sentAt = localIsoDateTime(new Date());
-    const rows = garments.map((garment) =>
-      addItemRow(customer, ticket, garment, String(garments.length), sentAt)
+    const exportGarments = garments.filter(hasGarmentData);
+    if (exportGarments.length === 0) {
+      return "";
+    }
+
+    const rows = exportGarments.map((garment) =>
+      addItemRow(customer, ticket, garment, String(exportGarments.length), sentAt)
     );
 
     return rows.map(toCsvRow).join("\n") + "\n";

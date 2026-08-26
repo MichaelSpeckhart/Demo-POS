@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { adapters } from "./formatters";
+import { hasExportData } from "./formatters/recordPresence";
 import { renderCustomerPage } from "./pages/customer";
 import { renderDatabasePage } from "./pages/database";
 import { renderEmployeesPage } from "./pages/employees";
@@ -537,6 +538,9 @@ async function deleteEmployee(employeeNumber: string) {
 }
 
 function validateExport() {
+  if (!hasExportData(state.customer, state.ticket, state.garments, state.employees)) {
+    return "Add at least one record before exporting.";
+  }
   if (!state.settings.outputDirectory.trim()) return "Choose an output folder before exporting.";
   if (!state.customer.accountNumber.trim()) return "Customer account number is required.";
   if (!state.ticket.ticketNumber.trim()) return "Ticket number is required.";
