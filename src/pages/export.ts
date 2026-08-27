@@ -1,11 +1,38 @@
 import type { AppState } from "../types";
 import { adapters } from "../formatters";
+import {
+  customerReadyForExport,
+  employeeReadyForExport,
+  garmentReadyForExport,
+  ticketReadyForExport,
+} from "../exportReadiness";
 import { resolveOutputFileName } from "../outputFileName";
 import { escapeAttribute, escapeHtml, field, statusMarkup } from "../ui/html";
 
 export function renderExportPage(state: AppState) {
   const isSpot = state.settings.posSystem === "spot";
-  const defaultFileName = adapters[state.settings.posSystem].fileName(state.ticket, new Date());
+  const isDeleteExport = state.settings.posSystem === "whiteconveyors" && state.settings.exportOperation !== "create";
+  const customerIsIncluded = state.customerAddedToExport && customerReadyForExport(state.customer, state.settings.posSystem);
+  const ticketIsIncluded = customerIsIncluded && state.ticketAddedToExport && ticketReadyForExport(state.ticket, state.settings.posSystem);
+  const exportCustomer = isDeleteExport || customerIsIncluded
+    ? state.customer
+    : null;
+  const exportTicket = isDeleteExport || ticketIsIncluded
+    ? state.ticket
+    : null;
+  const exportGarments = isDeleteExport
+    ? state.garments
+    : ticketIsIncluded
+      ? state.garments.filter(
+          (garment, index) => state.garmentAddedToExport[index] && garmentReadyForExport(garment, state.settings.posSystem)
+        )
+      : [];
+  const exportEmployees = isDeleteExport
+    ? state.employees
+    : state.employees.filter(
+        (employee, index) => state.employeeAddedToExport[index] && employeeReadyForExport(employee)
+      );
+  const defaultFileName = adapters[state.settings.posSystem].fileName(exportTicket ?? state.ticket, new Date());
   const outputFileName = resolveOutputFileName(state.settings.outputFileName, defaultFileName);
 
   return `
@@ -44,19 +71,23 @@ export function renderExportPage(state: AppState) {
         </div>
         <div>
           <span>Customer</span>
-          <strong>${escapeHtml(state.customer.firstName)} ${escapeHtml(state.customer.lastName)}</strong>
+          <strong>${exportCustomer ? `${escapeHtml(exportCustomer.firstName)} ${escapeHtml(exportCustomer.lastName)}` : "-"}</strong>
         </div>
         <div>
           <span>${isSpot ? "Invoice" : "Ticket"}</span>
-          <strong>${escapeHtml(isSpot ? state.ticket.displayInvoiceNumber : state.ticket.ticketNumber)}</strong>
+          <strong>${exportTicket ? escapeHtml(isSpot ? exportTicket.displayInvoiceNumber : exportTicket.ticketNumber) : "-"}</strong>
         </div>
         <div>
           <span>${isSpot ? "Promised" : "Ready"}</span>
-          <strong>${escapeHtml(isSpot ? state.ticket.promisedDateTime : `${state.ticket.readyDate} ${state.ticket.readyTime}`)}</strong>
+          <strong>${exportTicket ? escapeHtml(isSpot ? exportTicket.promisedDateTime : `${exportTicket.readyDate} ${exportTicket.readyTime}`) : "-"}</strong>
         </div>
         <div>
           <span>Garments</span>
-          <strong>${state.garments.length}</strong>
+          <strong>${exportGarments.length}</strong>
+        </div>
+        <div>
+          <span>Employees</span>
+          <strong>${exportEmployees.length}</strong>
         </div>
         <div>
           <span>File</span>

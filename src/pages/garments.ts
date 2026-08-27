@@ -1,4 +1,5 @@
 import type { AppState, Garment } from "../types";
+import { garmentReadyForExport, ticketReadyForExport } from "../exportReadiness";
 import { escapeAttribute, escapeHtml, field } from "../ui/html";
 
 export function renderGarmentsPage(state: AppState) {
@@ -39,6 +40,10 @@ function garmentForm(
   isSpot: boolean,
   isWhiteConveyors: boolean
 ) {
+  const ticketReady = state.ticketAddedToExport && ticketReadyForExport(state.ticket, state.settings.posSystem);
+  const ready = ticketReady && garmentReadyForExport(selectedGarment, state.settings.posSystem);
+  const added = Boolean(state.garmentAddedToExport[state.selectedGarmentIndex] && ready);
+
   return `
     <div class="form-surface record-form">
           <div class="section-title">
@@ -64,6 +69,11 @@ function garmentForm(
               : isWhiteConveyors
                 ? renderWhiteConveyorsGarmentFields(selectedGarment)
                 : renderWinCleanersGarmentFields(selectedGarment)}
+          </div>
+          <div class="add-to-export-row">
+            <button class="${ready && !added ? "primary-button" : "secondary-button"} add-to-export-button" data-action="add-garment-to-export" ${ready && !added ? "" : "disabled"}>
+              ${added ? "Garment Added to Export" : !ticketReady ? "Add Ticket First" : ready ? "Add Garment to Export" : "Complete Required Fields"}
+            </button>
           </div>
         </div>
   `;

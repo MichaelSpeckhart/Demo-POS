@@ -1,4 +1,5 @@
 import type { AppState } from "../types";
+import { customerReadyForExport } from "../exportReadiness";
 import { field } from "../ui/html";
 
 export function renderCustomerPage(state: AppState) {
@@ -26,6 +27,9 @@ export function renderCustomerPage(state: AppState) {
 }
 
 function customerForm(state: AppState, isSpot: boolean) {
+  const ready = customerReadyForExport(state.customer, state.settings.posSystem);
+  const added = state.customerAddedToExport && ready;
+
   return `
     <div class="form-surface">
         <div class="section-title">
@@ -55,6 +59,11 @@ function customerForm(state: AppState, isSpot: boolean) {
           ${field("customer.city", "City", state.customer.city)}
           ${field("customer.state", "State", state.customer.state)}
           ${field("customer.zipCode", "Zip Code", state.customer.zipCode)}
+        </div>
+        <div class="add-to-export-row">
+          <button class="${ready && !added ? "primary-button" : "secondary-button"} add-to-export-button" data-action="add-customer-to-export" ${ready && !added ? "" : "disabled"}>
+            ${added ? "Customer Added to Export" : ready ? "Add Customer to Export" : "Complete Required Fields"}
+          </button>
         </div>
       </div>
   `;

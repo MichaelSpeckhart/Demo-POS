@@ -497,6 +497,16 @@ select:focus {
   border-color: #287271;
 }
 
+.add-to-export-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.add-to-export-button:disabled {
+  opacity: 0.62;
+}
+
 .danger-button {
   height: 28px;
   padding: 0 10px;

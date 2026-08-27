@@ -1,4 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  customerReadyForExport,
+  employeeReadyForExport,
+  garmentReadyForExport,
+  ticketReadyForExport,
+} from "./exportReadiness";
 import { adapters } from "./formatters";
 import { hasCustomerData, hasExportData, hasGarmentData, hasTicketData } from "./formatters/recordPresence";
 import { renderCustomerPage } from "./pages/customer";
@@ -110,6 +116,10 @@ const state: AppState = {
   employees: defaultEmployees(),
   customerDraftActive: false,
   ticketDraftActive: false,
+  customerAddedToExport: false,
+  ticketAddedToExport: false,
+  garmentAddedToExport: [],
+  employeeAddedToExport: [],
   selectedGarmentIndex: 0,
   selectedEmployeeIndex: 0,
   preview: "",
@@ -143,11 +153,12 @@ const pages: { id: PageId; label: string; render: (state: AppState) => string }[
 
 function render() {
   const adapter = adapters[state.settings.posSystem];
+  const exportData = currentExportData();
   state.preview = adapter.formatExport(
-    state.customer,
-    state.ticket,
-    state.garments,
-    state.employees,
+    exportData.customer,
+    exportData.ticket,
+    exportData.garments,
+    exportData.employees,
     state.settings.exportOperation
   );
   const activePage = pages.find((page) => page.id === state.activePage) ?? pages[0];
@@ -276,6 +287,7 @@ function bindEvents() {
         state.ticket.customerAccountNumber = "";
         state.customer = defaultCustomer();
         state.customerDraftActive = false;
+        state.customerAddedToExport = false;
         state.status = "";
         render();
         return;
@@ -285,6 +297,7 @@ function bindEvents() {
       if (customer) {
         state.customer = customer;
         state.customerDraftActive = true;
+        state.customerAddedToExport = false;
       }
       state.status = "";
       render();
@@ -300,6 +313,8 @@ function bindEvents() {
         state.ticket = defaultTicket(state.customer.accountNumber);
         state.ticketDraftActive = false;
         state.garments = [];
+        state.ticketAddedToExport = false;
+        state.garmentAddedToExport = [];
         state.selectedGarmentIndex = 0;
         state.status = "";
         render();
@@ -315,9 +330,12 @@ function bindEvents() {
     button.addEventListener("click", () => {
       state.customer = defaultCustomer();
       state.customerDraftActive = true;
-      if (!state.ticketDraftActive) {
-        state.ticket = defaultTicket();
-      }
+      state.customerAddedToExport = false;
+      state.ticket = defaultTicket();
+      state.ticketDraftActive = false;
+      state.ticketAddedToExport = false;
+      state.garments = [];
+      state.garmentAddedToExport = [];
       state.status = "";
       render();
     });
@@ -327,6 +345,9 @@ function bindEvents() {
     button.addEventListener("click", () => {
       state.ticket = defaultTicket(state.customer.accountNumber);
       state.ticketDraftActive = true;
+      state.ticketAddedToExport = false;
+      state.garments = [];
+      state.garmentAddedToExport = [];
       state.status = "";
       render();
     });
@@ -386,6 +407,7 @@ function bindEvents() {
 
   document.querySelector<HTMLButtonElement>("[data-action='add-garment']")?.addEventListener("click", () => {
     state.garments.push(blankGarment());
+    state.garmentAddedToExport.push(false);
     state.selectedGarmentIndex = state.garments.length - 1;
     state.status = "";
     render();
@@ -393,9 +415,26 @@ function bindEvents() {
 
   document.querySelector<HTMLButtonElement>("[data-action='add-employee']")?.addEventListener("click", () => {
     state.employees.push(blankEmployee());
+    state.employeeAddedToExport.push(false);
     state.selectedEmployeeIndex = state.employees.length - 1;
     state.status = "";
     render();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='add-customer-to-export']")?.addEventListener("click", () => {
+    addCustomerToExport();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='add-ticket-to-export']")?.addEventListener("click", () => {
+    addTicketToExport();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='add-garment-to-export']")?.addEventListener("click", () => {
+    addGarmentToExport();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='add-employee-to-export']")?.addEventListener("click", () => {
+    addEmployeeToExport();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='export']")?.addEventListener("click", () => {
@@ -516,6 +555,10 @@ function selectCustomerDeleteTarget(accountNumber: string) {
   state.employees = [];
   state.customerDraftActive = true;
   state.ticketDraftActive = false;
+  state.customerAddedToExport = false;
+  state.ticketAddedToExport = false;
+  state.garmentAddedToExport = [];
+  state.employeeAddedToExport = [];
   state.selectedGarmentIndex = 0;
   state.selectedEmployeeIndex = 0;
   state.status = "";
@@ -533,6 +576,10 @@ function selectTicketDeleteTarget(ticketNumber: string) {
   setTicketDeleteTarget(row);
   state.garments = [];
   state.employees = [];
+  state.customerAddedToExport = false;
+  state.ticketAddedToExport = false;
+  state.garmentAddedToExport = [];
+  state.employeeAddedToExport = [];
   state.status = "";
   render();
 }
@@ -560,6 +607,10 @@ function selectGarmentDeleteTarget(value: string) {
 
   state.garments = [garmentFromRecord(row)];
   state.employees = [];
+  state.customerAddedToExport = false;
+  state.ticketAddedToExport = false;
+  state.garmentAddedToExport = [false];
+  state.employeeAddedToExport = [];
   state.selectedGarmentIndex = 0;
   state.selectedEmployeeIndex = 0;
   state.status = "";
@@ -580,6 +631,10 @@ function selectEmployeeDeleteTarget(employeeNumber: string) {
   state.employees = [employeeFromRecord(row)];
   state.customerDraftActive = false;
   state.ticketDraftActive = false;
+  state.customerAddedToExport = false;
+  state.ticketAddedToExport = false;
+  state.garmentAddedToExport = [];
+  state.employeeAddedToExport = [false];
   state.selectedGarmentIndex = 0;
   state.selectedEmployeeIndex = 0;
   state.status = "";
@@ -595,6 +650,10 @@ function setTicketDeleteTarget(row: TicketRecord) {
   state.ticket = ticketFromRecord(row);
   state.customerDraftActive = true;
   state.ticketDraftActive = true;
+  state.customerAddedToExport = false;
+  state.ticketAddedToExport = false;
+  state.garmentAddedToExport = [];
+  state.employeeAddedToExport = [];
   state.selectedGarmentIndex = 0;
   state.selectedEmployeeIndex = 0;
 }
@@ -653,6 +712,99 @@ function employeeFromRecord(row: EmployeeRecord): Employee {
   };
 }
 
+function currentExportData() {
+  if (isDeleteExportMode()) {
+    return {
+      customer: state.customer,
+      ticket: state.ticket,
+      garments: state.garments,
+      employees: state.employees,
+    };
+  }
+
+  const customerIsIncluded = state.customerAddedToExport && customerReadyForExport(state.customer, state.settings.posSystem);
+  const ticketIsIncluded = customerIsIncluded && state.ticketAddedToExport && ticketReadyForExport(state.ticket, state.settings.posSystem);
+
+  const customer = customerIsIncluded
+    ? state.customer
+    : defaultCustomer();
+  const ticket = ticketIsIncluded
+    ? state.ticket
+    : defaultTicket(customer.accountNumber);
+  const garments = ticketIsIncluded
+    ? state.garments.filter(
+        (garment, index) => state.garmentAddedToExport[index] && garmentReadyForExport(garment, state.settings.posSystem)
+      )
+    : [];
+  const employees = state.employees.filter(
+    (employee, index) => state.employeeAddedToExport[index] && employeeReadyForExport(employee)
+  );
+
+  return { customer, ticket, garments, employees };
+}
+
+function addCustomerToExport() {
+  if (!customerReadyForExport(state.customer, state.settings.posSystem)) {
+    setStatus("Fill the required customer fields before adding the customer to export.", "error");
+    return;
+  }
+
+  state.customerAddedToExport = true;
+  setStatus("Customer added to export.", "success");
+}
+
+function addTicketToExport() {
+  if (!state.customerAddedToExport || !customerReadyForExport(state.customer, state.settings.posSystem)) {
+    setStatus("Add the customer to export before adding a ticket.", "error");
+    return;
+  }
+
+  if (!ticketReadyForExport(state.ticket, state.settings.posSystem)) {
+    setStatus("Fill the required ticket fields before adding the ticket to export.", "error");
+    return;
+  }
+
+  state.ticketAddedToExport = true;
+  setStatus(`${state.settings.posSystem === "spot" ? "Invoice" : "Ticket"} added to export.`, "success");
+}
+
+function addGarmentToExport() {
+  const garment = state.garments[state.selectedGarmentIndex];
+  if (!garment) {
+    setStatus("Create a garment before adding it to export.", "error");
+    return;
+  }
+
+  if (!state.ticketAddedToExport || !ticketReadyForExport(state.ticket, state.settings.posSystem)) {
+    setStatus("Add the ticket to export before adding garments.", "error");
+    return;
+  }
+
+  if (!garmentReadyForExport(garment, state.settings.posSystem)) {
+    setStatus("Fill the required garment fields before adding the garment to export.", "error");
+    return;
+  }
+
+  state.garmentAddedToExport[state.selectedGarmentIndex] = true;
+  setStatus("Garment added to export.", "success");
+}
+
+function addEmployeeToExport() {
+  const employee = state.employees[state.selectedEmployeeIndex];
+  if (!employee) {
+    setStatus("Create an employee before adding it to export.", "error");
+    return;
+  }
+
+  if (!employeeReadyForExport(employee)) {
+    setStatus("Fill the required employee fields before adding the employee to export.", "error");
+    return;
+  }
+
+  state.employeeAddedToExport[state.selectedEmployeeIndex] = true;
+  setStatus("Employee added to export.", "success");
+}
+
 async function exportFile() {
   const validationError = validateExport();
   if (validationError) {
@@ -662,10 +814,11 @@ async function exportFile() {
   }
 
   const adapter = adapters[state.settings.posSystem];
+  const exportData = currentExportData();
   const timestamp = new Date();
   const fileName = resolveOutputFileName(
     state.settings.outputFileName,
-    adapter.fileName(state.ticket, timestamp)
+    adapter.fileName(exportData.ticket, timestamp)
   );
   if (!fileName) {
     setStatus("Choose a valid output file name.", "error");
@@ -675,21 +828,21 @@ async function exportFile() {
 
   const request: WriteExportRequest = {
     posSystem: state.settings.posSystem,
-    ticketNumber: state.ticket.ticketNumber,
+    ticketNumber: exportData.ticket.ticketNumber,
     outputDirectory: state.settings.outputDirectory,
     fileName,
     contents: adapter.formatExport(
-      state.customer,
-      state.ticket,
-      state.garments,
-      state.employees,
+      exportData.customer,
+      exportData.ticket,
+      exportData.garments,
+      exportData.employees,
       state.settings.exportOperation
     ),
   };
 
   try {
     if (isEmployeeOnlyCreateExport()) {
-      await saveWhiteConveyorsEmployees();
+      await saveWhiteConveyorsEmployees(exportData.employees);
     } else if (!isDeleteExportMode()) {
       await saveWorkspace();
     }
@@ -824,7 +977,11 @@ async function deleteGarment(ticketNumber: string, garmentId: string) {
     render();
     await invoke("delete_garment", { request: { ticketNumber, garmentId } });
     if (state.ticket.ticketNumber === ticketNumber) {
-      state.garments = state.garments.filter((garment) => garment.id !== garmentId);
+      const retainedGarments = state.garments
+        .map((garment, index) => ({ garment, added: state.garmentAddedToExport[index] ?? false }))
+        .filter(({ garment }) => garment.id !== garmentId);
+      state.garments = retainedGarments.map(({ garment }) => garment);
+      state.garmentAddedToExport = retainedGarments.map(({ added }) => added);
       state.selectedGarmentIndex = Math.min(state.selectedGarmentIndex, Math.max(state.garments.length - 1, 0));
     }
     await refreshDatabaseSummary();
@@ -843,7 +1000,11 @@ async function deleteEmployee(employeeNumber: string) {
     state.statusKind = "neutral";
     render();
     await invoke("delete_employee", { request: { employeeNumber } });
-    state.employees = state.employees.filter((employee) => employee.employeeNumber !== employeeNumber);
+    const retainedEmployees = state.employees
+      .map((employee, index) => ({ employee, added: state.employeeAddedToExport[index] ?? false }))
+      .filter(({ employee }) => employee.employeeNumber !== employeeNumber);
+    state.employees = retainedEmployees.map(({ employee }) => employee);
+    state.employeeAddedToExport = retainedEmployees.map(({ added }) => added);
     state.selectedEmployeeIndex = Math.min(state.selectedEmployeeIndex, Math.max(state.employees.length - 1, 0));
     await refreshDatabaseSummary();
     state.status = `Deleted employee ${employeeNumber}`;
@@ -855,61 +1016,65 @@ async function deleteEmployee(employeeNumber: string) {
 }
 
 function validateExport() {
+  const exportData = currentExportData();
+
   if (state.settings.posSystem === "whiteconveyors" && state.settings.exportOperation !== "create") {
     if (!state.settings.outputDirectory.trim()) return "Choose an output folder before exporting.";
     if (state.settings.exportOperation === "employeeDelete") {
-      if (!state.employees.some((employee) => employee.employeeNumber.trim())) {
+      if (!exportData.employees.some((employee) => employee.employeeNumber.trim())) {
         return "Choose an employee before exporting an employee delete.";
       }
       return "";
     }
-    if (!state.customer.accountNumber.trim()) return "Customer account number is required.";
-    if (state.settings.exportOperation === "ticketDelete" && !state.ticket.ticketNumber.trim()) {
+    if (!exportData.customer.accountNumber.trim()) return "Customer account number is required.";
+    if (state.settings.exportOperation === "ticketDelete" && !exportData.ticket.ticketNumber.trim()) {
       return "Ticket number is required.";
     }
     if (state.settings.exportOperation === "garmentDelete") {
-      if (!state.ticket.ticketNumber.trim()) return "Ticket number is required.";
-      if (!state.garments.some((garment) => garment.id.trim())) {
+      if (!exportData.ticket.ticketNumber.trim()) return "Ticket number is required.";
+      if (!exportData.garments.some((garment) => garment.id.trim())) {
         return "Add at least one garment number before exporting a garment delete.";
       }
     }
     return "";
   }
 
-  if (!hasExportData(state.customer, state.ticket, state.garments, state.employees)) {
-    return "Add at least one record before exporting.";
+  if (!hasExportData(exportData.customer, exportData.ticket, exportData.garments, exportData.employees)) {
+    return "Add at least one completed record to export.";
   }
   if (!state.settings.outputDirectory.trim()) return "Choose an output folder before exporting.";
   if (isEmployeeOnlyCreateExport()) {
     return "";
   }
-  if (!state.customer.accountNumber.trim()) return "Customer account number is required.";
-  if (!state.ticket.ticketNumber.trim()) return "Ticket number is required.";
+
+  if (
+    state.settings.posSystem !== "whiteconveyors" &&
+    !exportData.customer.accountNumber.trim() &&
+    !exportData.ticket.ticketNumber.trim() &&
+    !exportData.garments.some((garment) => garment.id.trim()) &&
+    exportData.employees.some((employee) => employee.employeeNumber.trim())
+  ) {
+    return "Employee rows are only exported when White Conveyors is selected.";
+  }
+
+  if (!exportData.customer.accountNumber.trim()) return "Customer account number is required.";
+
+  if (state.settings.posSystem !== "spot") {
+    return "";
+  }
+
+  if (!exportData.ticket.ticketNumber.trim()) return "Ticket number is required.";
   if (state.settings.posSystem === "spot") {
-    if (!state.ticket.fullInvoiceNumber.trim()) return "Full invoice number is required.";
-    if (!state.ticket.displayInvoiceNumber.trim()) return "Display invoice number is required.";
-    if (!state.ticket.dropoffDateTime.trim()) return "Dropoff date/time is required.";
-    if (!state.ticket.promisedDateTime.trim()) return "Promised date/time is required.";
+    if (!exportData.ticket.fullInvoiceNumber.trim()) return "Full invoice number is required.";
+    if (!exportData.ticket.displayInvoiceNumber.trim()) return "Display invoice number is required.";
+    if (!exportData.ticket.dropoffDateTime.trim()) return "Dropoff date/time is required.";
+    if (!exportData.ticket.promisedDateTime.trim()) return "Promised date/time is required.";
   }
-  if (state.settings.posSystem === "wincleaners" || state.settings.posSystem === "whiteconveyors") {
-    if (!state.ticket.readyDate.trim()) return "Ready date is required.";
-    if (!state.ticket.readyTime.trim()) return "Ready time is required.";
-  }
-  if (state.garments.length === 0) return "Add at least one garment.";
-  const incomplete = state.garments.find((garment) => !garment.id.trim() || !garment.description.trim());
+  if (exportData.garments.length === 0) return "Add at least one garment to export.";
+  const incomplete = exportData.garments.find((garment) => !garment.id.trim() || !garment.description.trim());
   if (incomplete) return "Each garment needs at least an ID and description.";
-  if (state.settings.posSystem === "spot") {
-    const missingSlot = state.garments.find((garment) => !garment.slotOccupancy.trim());
-    if (missingSlot) return "Each SPOT garment needs slot occupancy.";
-  }
-  if (state.settings.posSystem === "whiteconveyors") {
-    const missingServiceType = state.garments.find((garment) => !garment.serviceType.trim());
-    if (missingServiceType) return "Each White Conveyors garment needs a service type.";
-    const incompleteEmployee = state.employees.find(
-      (employee) => !employee.employeeNumber.trim() && employee.employeeName.trim()
-    );
-    if (incompleteEmployee) return "Each named White Conveyors employee needs an employee number.";
-  }
+  const missingSlot = exportData.garments.find((garment) => !garment.slotOccupancy.trim());
+  if (missingSlot) return "Each SPOT garment needs slot occupancy.";
   return "";
 }
 
@@ -948,6 +1113,10 @@ async function loadTicketWorkspace(ticketNumber: string) {
       }
       state.garments = workspace.garments.length > 0 ? workspace.garments : [];
       state.employees = workspace.employees;
+      state.customerAddedToExport = false;
+      state.ticketAddedToExport = false;
+      state.garmentAddedToExport = state.garments.map(() => false);
+      state.employeeAddedToExport = state.employees.map(() => false);
       state.selectedGarmentIndex = 0;
       state.selectedEmployeeIndex = 0;
       updateLivePreview();
@@ -968,6 +1137,10 @@ function resetWorkspaceDraft() {
   state.employees = defaultEmployees();
   state.customerDraftActive = false;
   state.ticketDraftActive = false;
+  state.customerAddedToExport = false;
+  state.ticketAddedToExport = false;
+  state.garmentAddedToExport = [];
+  state.employeeAddedToExport = [];
   state.selectedGarmentIndex = 0;
   state.selectedEmployeeIndex = 0;
   updateLivePreview();
@@ -1006,8 +1179,8 @@ async function saveSelectedEmployee() {
   }
 }
 
-async function saveWhiteConveyorsEmployees() {
-  for (const employee of state.employees) {
+async function saveWhiteConveyorsEmployees(employees: Employee[]) {
+  for (const employee of employees) {
     if (!employee.employeeNumber.trim()) {
       continue;
     }
@@ -1082,11 +1255,12 @@ async function refreshDatabaseSummary() {
 
 function updateLivePreview() {
   const adapter = adapters[state.settings.posSystem];
+  const exportData = currentExportData();
   state.preview = adapter.formatExport(
-    state.customer,
-    state.ticket,
-    state.garments,
-    state.employees,
+    exportData.customer,
+    exportData.ticket,
+    exportData.garments,
+    exportData.employees,
     state.settings.exportOperation
   );
   document.querySelector<HTMLPreElement>(".preview")?.replaceChildren(
@@ -1109,13 +1283,14 @@ function isDeleteExportMode() {
 }
 
 function isEmployeeOnlyCreateExport() {
+  const exportData = currentExportData();
   return (
     state.settings.posSystem === "whiteconveyors" &&
     state.settings.exportOperation === "create" &&
-    !state.customer.accountNumber.trim() &&
-    !state.ticket.ticketNumber.trim() &&
-    !state.garments.some((garment) => garment.id.trim()) &&
-    state.employees.some((employee) => employee.employeeNumber.trim())
+    !exportData.customer.accountNumber.trim() &&
+    !exportData.ticket.ticketNumber.trim() &&
+    !exportData.garments.some((garment) => garment.id.trim()) &&
+    exportData.employees.some((employee) => employee.employeeNumber.trim())
   );
 }
 

@@ -1,4 +1,5 @@
 import type { AppState } from "../types";
+import { customerReadyForExport, ticketReadyForExport } from "../exportReadiness";
 import { escapeAttribute, escapeHtml, field } from "../ui/html";
 
 export function renderTicketPage(state: AppState) {
@@ -26,6 +27,11 @@ export function renderTicketPage(state: AppState) {
 }
 
 function ticketForm(state: AppState, isSpot: boolean, isWhiteConveyors: boolean) {
+  const label = isSpot ? "Invoice" : "Ticket";
+  const customerReady = state.customerAddedToExport && customerReadyForExport(state.customer, state.settings.posSystem);
+  const ready = customerReady && ticketReadyForExport(state.ticket, state.settings.posSystem);
+  const added = state.ticketAddedToExport && ready;
+
   return `
     <div class="form-surface">
         <div class="section-title">
@@ -40,6 +46,11 @@ function ticketForm(state: AppState, isSpot: boolean, isWhiteConveyors: boolean)
         </label>
 
         ${isSpot ? renderSpotTicketSections(state) : renderTicketSections(state, isWhiteConveyors)}
+        <div class="add-to-export-row">
+          <button class="${ready && !added ? "primary-button" : "secondary-button"} add-to-export-button" data-action="add-ticket-to-export" ${ready && !added ? "" : "disabled"}>
+            ${added ? `${label} Added to Export` : !customerReady ? "Add Customer First" : ready ? `Add ${label} to Export` : "Complete Required Fields"}
+          </button>
+        </div>
       </div>
   `;
 }

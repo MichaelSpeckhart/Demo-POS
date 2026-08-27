@@ -1,4 +1,5 @@
 import type { AppState, Employee } from "../types";
+import { employeeReadyForExport } from "../exportReadiness";
 import { escapeHtml, field } from "../ui/html";
 
 export function renderEmployeesPage(state: AppState) {
@@ -28,13 +29,16 @@ export function renderEmployeesPage(state: AppState) {
             ${state.employees.length === 0 ? `<div class="empty-list">No employees added</div>` : state.employees.map((employee, index) => employeeButton(employee, index, index === state.selectedEmployeeIndex)).join("")}
           </div>
         </div>
-        ${selectedEmployee ? employeeForm(selectedEmployee) : emptyEmployee()}
+        ${selectedEmployee ? employeeForm(state, selectedEmployee) : emptyEmployee()}
       </div>
     </section>
   `;
 }
 
-function employeeForm(selectedEmployee: Employee) {
+function employeeForm(state: AppState, selectedEmployee: Employee) {
+  const ready = employeeReadyForExport(selectedEmployee);
+  const added = Boolean(state.employeeAddedToExport[state.selectedEmployeeIndex] && ready);
+
   return `
     <div class="form-surface record-form">
           <div class="section-title">
@@ -44,6 +48,11 @@ function employeeForm(selectedEmployee: Employee) {
           <div class="form-grid aligned-grid two-column-grid">
             ${field("employee.employeeNumber", "Employee Number", selectedEmployee.employeeNumber, "Used by Comp-U-Sort as the employee login number.")}
             ${field("employee.employeeName", "Employee Name", selectedEmployee.employeeName)}
+          </div>
+          <div class="add-to-export-row">
+            <button class="${ready && !added ? "primary-button" : "secondary-button"} add-to-export-button" data-action="add-employee-to-export" ${ready && !added ? "" : "disabled"}>
+              ${added ? "Employee Added to Export" : ready ? "Add Employee to Export" : "Complete Required Fields"}
+            </button>
           </div>
         </div>
   `;

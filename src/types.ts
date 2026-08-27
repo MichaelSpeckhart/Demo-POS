@@ -108,6 +108,10 @@ export interface AppState {
   employees: Employee[];
   customerDraftActive: boolean;
   ticketDraftActive: boolean;
+  customerAddedToExport: boolean;
+  ticketAddedToExport: boolean;
+  garmentAddedToExport: boolean[];
+  employeeAddedToExport: boolean[];
   selectedGarmentIndex: number;
   selectedEmployeeIndex: number;
   preview: string;
