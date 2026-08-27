@@ -1,10 +1,12 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 
@@ -330,6 +332,16 @@ fn migrate_db(conn: &Connection) -> Result<(), String> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS input_file_events (
+            path TEXT PRIMARY KEY,
+            modified_at TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            status TEXT NOT NULL,
+            message TEXT NOT NULL,
+            processed_at TEXT NOT NULL
+        );
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -373,15 +385,19 @@ fn now_epoch_seconds() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-#[tauri::command]
-fn load_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
-    let path = settings_path(&app)?;
+fn read_settings(app: &tauri::AppHandle) -> Result<AppSettings, String> {
+    let path = settings_path(app)?;
     if !path.exists() {
         return Ok(AppSettings::default());
     }
 
     let data = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     serde_json::from_str(&data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
+    read_settings(&app)
 }
 
 #[tauri::command]
@@ -1053,6 +1069,441 @@ fn record_export(
     Ok(())
 }
 
+fn start_file_watch(app: tauri::AppHandle) {
+    thread::spawn(move || loop {
+        if let Err(error) = scan_input_folder_for_receipts(&app) {
+            eprintln!("Receipt input watcher error: {error}");
+        }
+        thread::sleep(Duration::from_secs(5));
+    });
+}
+
+fn scan_input_folder_for_receipts(app: &tauri::AppHandle) -> Result<(), String> {
+    let settings = read_settings(app)?;
+    let input_directory = settings.input_directory.trim();
+    let printer_path = settings.receipt_printer_path.trim();
+
+    if input_directory.is_empty() || printer_path.is_empty() {
+        return Ok(());
+    }
+
+    let input_path = Path::new(input_directory);
+    if !input_path.is_dir() {
+        return Ok(());
+    }
+
+    let conn = open_db(app)?;
+    for entry in fs::read_dir(input_path).map_err(|e| e.to_string())? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("Receipt input watcher skipped directory entry: {error}");
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !is_txt_file(&path) {
+            continue;
+        }
+
+        if let Err(error) = process_receipt_input_file(&conn, printer_path, &path) {
+            eprintln!(
+                "Receipt input watcher failed for {}: {error}",
+                path.to_string_lossy()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn process_receipt_input_file(
+    conn: &Connection,
+    printer_path: &str,
+    path: &Path,
+) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Ok(());
+    }
+
+    let modified_at = file_modified_epoch(&metadata);
+    let file_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+    let path_string = path.to_string_lossy().to_string();
+
+    if input_file_event_is_current(conn, &path_string, &modified_at, file_size)? {
+        return Ok(());
+    }
+
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    let contents = String::from_utf8_lossy(&bytes);
+    if !contains_print_receipt_command(&contents) {
+        record_input_file_event(
+            conn,
+            &path_string,
+            &modified_at,
+            file_size,
+            "",
+            "ignored",
+            "No PRINT_RECIEPT command found.",
+        )?;
+        return Ok(());
+    }
+
+    let result = print_receipt_from_command(conn, printer_path, &contents);
+    match result {
+        Ok(ticket_number) => record_input_file_event(
+            conn,
+            &path_string,
+            &modified_at,
+            file_size,
+            "PRINT_RECIEPT",
+            "printed",
+            &format!("Printed receipt for ticket {ticket_number}."),
+        ),
+        Err(error) => record_input_file_event(
+            conn,
+            &path_string,
+            &modified_at,
+            file_size,
+            "PRINT_RECIEPT",
+            "failed",
+            &error,
+        ),
+    }
+}
+
+fn print_receipt_from_command(
+    conn: &Connection,
+    printer_path: &str,
+    contents: &str,
+) -> Result<String, String> {
+    let ticket_number = receipt_command_ticket_number(conn, contents)?;
+    let workspace = load_workspace_by_ticket_number(conn, &ticket_number)?
+        .ok_or_else(|| format!("Ticket {ticket_number} was not found in SQLite."))?;
+    let receipt = build_receipt(&workspace.customer, &workspace.ticket, &workspace.garments);
+    send_escpos(printer_path, &receipt)?;
+    Ok(ticket_number)
+}
+
+fn receipt_command_ticket_number(conn: &Connection, contents: &str) -> Result<String, String> {
+    if let Some(value) = extract_explicit_receipt_lookup(contents) {
+        return resolve_ticket_lookup(conn, &value);
+    }
+
+    if let Some(account_number) = extract_keyed_value(contents, &["ACCOUNT_NUMBER", "ACCOUNT"]) {
+        return resolve_account_lookup(conn, &account_number);
+    }
+
+    resolve_embedded_ticket_lookup(conn, contents)
+}
+
+fn resolve_ticket_lookup(conn: &Connection, value: &str) -> Result<String, String> {
+    let lookup = value.trim();
+    if lookup.is_empty() {
+        return Err(
+            "PRINT_RECIEPT command did not include a ticket or invoice number.".to_string(),
+        );
+    }
+
+    let ticket_number = conn
+        .query_row(
+            r#"
+            SELECT ticket_number
+            FROM tickets
+            WHERE ticket_number = ?1
+               OR full_invoice_number = ?1
+               OR display_invoice_number = ?1
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+            params![lookup],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    ticket_number
+        .ok_or_else(|| format!("No SQLite ticket matched PRINT_RECIEPT lookup value '{lookup}'."))
+}
+
+fn resolve_account_lookup(conn: &Connection, account_number: &str) -> Result<String, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT ticket_number
+            FROM tickets
+            WHERE customer_account_number = ?1
+            ORDER BY updated_at DESC
+            LIMIT 2
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let tickets = stmt
+        .query_map(params![account_number.trim()], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    match tickets.as_slice() {
+        [ticket_number] => Ok(ticket_number.clone()),
+        [] => Err(format!(
+            "No SQLite tickets matched account number '{}'.",
+            account_number.trim()
+        )),
+        _ => Err(format!(
+            "Account number '{}' has multiple tickets; include TICKET_NUMBER in the PRINT_RECIEPT file.",
+            account_number.trim()
+        )),
+    }
+}
+
+fn resolve_embedded_ticket_lookup(conn: &Connection, contents: &str) -> Result<String, String> {
+    let tickets = load_ticket_records(conn)?;
+    let mut matches = HashSet::new();
+
+    for ticket in tickets {
+        for value in [
+            ticket.ticket_number,
+            ticket.full_invoice_number,
+            ticket.display_invoice_number,
+        ] {
+            let value = value.trim();
+            if !value.is_empty() && contents.contains(value) {
+                matches.insert(value.to_string());
+            }
+        }
+    }
+
+    match matches.len() {
+        1 => {
+            let value = matches
+                .into_iter()
+                .next()
+                .ok_or_else(|| "Unable to read matched ticket number.".to_string())?;
+            resolve_ticket_lookup(conn, &value)
+        }
+        0 => Err(
+            "PRINT_RECIEPT command needs a TICKET_NUMBER, invoice number, or matching ticket value."
+                .to_string(),
+        ),
+        _ => Err("PRINT_RECIEPT file matched multiple tickets; include TICKET_NUMBER.".to_string()),
+    }
+}
+
+fn extract_explicit_receipt_lookup(contents: &str) -> Option<String> {
+    if let Some(value) = extract_keyed_value(
+        contents,
+        &[
+            "TICKET_NUMBER",
+            "TICKET",
+            "INVOICE_NUMBER",
+            "FULL_INVOICE_NUMBER",
+            "DISPLAY_INVOICE_NUMBER",
+        ],
+    ) {
+        return Some(value);
+    }
+
+    for row in delimited_rows(contents) {
+        if row.is_empty() || !is_print_receipt_command(&row[0]) {
+            continue;
+        }
+
+        if let Some(value) = row.iter().skip(1).find(|value| !value.trim().is_empty()) {
+            return Some(value.trim().to_string());
+        }
+    }
+
+    for pair in delimited_rows(contents).windows(2) {
+        let header = &pair[0];
+        let row = &pair[1];
+        let Some(transaction_index) = header
+            .iter()
+            .position(|value| normalize_key(value) == "TRANSACTION")
+        else {
+            continue;
+        };
+        if !row
+            .get(transaction_index)
+            .is_some_and(|value| is_print_receipt_command(value))
+        {
+            continue;
+        }
+
+        for key in [
+            "TICKET_NUMBER",
+            "TICKET",
+            "INVOICE_NUMBER",
+            "FULL_INVOICE_NUMBER",
+            "DISPLAY_INVOICE_NUMBER",
+        ] {
+            if let Some(index) = header.iter().position(|value| normalize_key(value) == key) {
+                if let Some(value) = row.get(index) {
+                    if !value.trim().is_empty() {
+                        return Some(value.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_keyed_value(contents: &str, keys: &[&str]) -> Option<String> {
+    for line in contents.lines() {
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        for delimiter in ["=", ":", "|", ",", "\t"] {
+            let Some((key, value)) = trimmed.split_once(delimiter) else {
+                continue;
+            };
+            if keys.iter().any(|expected| normalize_key(key) == *expected) {
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn delimited_rows(contents: &str) -> Vec<Vec<String>> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim().trim_start_matches('\u{feff}');
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            let delimiter = [',', '|', '\t']
+                .into_iter()
+                .max_by_key(|delimiter| trimmed.matches(*delimiter).count())?;
+            if !trimmed.contains(delimiter) {
+                return None;
+            }
+
+            Some(
+                trimmed
+                    .split(delimiter)
+                    .map(|value| {
+                        value
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string()
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn normalize_key(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .flat_map(|character| character.to_uppercase())
+        .collect()
+}
+
+fn contains_print_receipt_command(contents: &str) -> bool {
+    let upper = contents.to_ascii_uppercase();
+    upper.contains("PRINT_RECIEPT") || upper.contains("PRINT_RECEIPT")
+}
+
+fn is_print_receipt_command(value: &str) -> bool {
+    let normalized = normalize_key(value);
+    normalized == "PRINT_RECIEPT" || normalized == "PRINT_RECEIPT"
+}
+
+fn is_txt_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+}
+
+fn file_modified_epoch(metadata: &fs::Metadata) -> String {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|| "0".to_string())
+}
+
+fn input_file_event_is_current(
+    conn: &Connection,
+    path: &str,
+    modified_at: &str,
+    file_size: i64,
+) -> Result<bool, String> {
+    let seen = conn
+        .query_row(
+            r#"
+            SELECT 1
+            FROM input_file_events
+            WHERE path = ?1
+              AND modified_at = ?2
+              AND file_size = ?3
+            "#,
+            params![path, modified_at, file_size],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(seen.is_some())
+}
+
+fn record_input_file_event(
+    conn: &Connection,
+    path: &str,
+    modified_at: &str,
+    file_size: i64,
+    command: &str,
+    status: &str,
+    message: &str,
+) -> Result<(), String> {
+    conn.execute(
+        r#"
+        INSERT INTO input_file_events (
+            path, modified_at, file_size, command, status, message, processed_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(path) DO UPDATE SET
+            modified_at = excluded.modified_at,
+            file_size = excluded.file_size,
+            command = excluded.command,
+            status = excluded.status,
+            message = excluded.message,
+            processed_at = excluded.processed_at
+        "#,
+        params![
+            path,
+            modified_at,
+            file_size,
+            command,
+            status,
+            message,
+            now_epoch_seconds()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn delete_customer(app: tauri::AppHandle, request: DeleteCustomerRequest) -> Result<(), String> {
     let mut conn = open_db(&app)?;
@@ -1675,10 +2126,52 @@ fn send_escpos(printer_path: &str, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_print_receipt_command_spellings() {
+        assert!(contains_print_receipt_command("PRINT_RECIEPT"));
+        assert!(contains_print_receipt_command("print_receipt"));
+    }
+
+    #[test]
+    fn extracts_keyed_ticket_number() {
+        let contents = "TRANSACTION=PRINT_RECIEPT\nTICKET_NUMBER=12345\n";
+        assert_eq!(
+            extract_explicit_receipt_lookup(contents),
+            Some("12345".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_ticket_number_from_command_row() {
+        let contents = "PRINT_RECIEPT,12345\n";
+        assert_eq!(
+            extract_explicit_receipt_lookup(contents),
+            Some("12345".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_ticket_number_from_header_row() {
+        let contents = "TRANSACTION,TICKET_NUMBER\nPRINT_RECIEPT,12345\n";
+        assert_eq!(
+            extract_explicit_receipt_lookup(contents),
+            Some("12345".to_string())
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            start_file_watch(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
@@ -1703,5 +2196,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
-pub async fn file_watch() {}
