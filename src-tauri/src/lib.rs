@@ -15,6 +15,8 @@ use tauri::Manager;
 struct AppSettings {
     pos_system: String,
     input_directory: String,
+    #[serde(default)]
+    input_file_name: String,
     output_directory: String,
     #[serde(default)]
     output_file_name: String,
@@ -29,6 +31,7 @@ impl Default for AppSettings {
         Self {
             pos_system: "spot".to_string(),
             input_directory: String::new(),
+            input_file_name: String::new(),
             output_directory: String::new(),
             output_file_name: String::new(),
             export_operation: default_export_operation(),
@@ -1081,6 +1084,7 @@ fn start_file_watch(app: tauri::AppHandle) {
 fn scan_input_folder_for_receipts(app: &tauri::AppHandle) -> Result<(), String> {
     let settings = read_settings(app)?;
     let input_directory = settings.input_directory.trim();
+    let input_file_name = settings.input_file_name.trim();
     let printer_path = settings.receipt_printer_path.trim();
 
     if input_directory.is_empty() || printer_path.is_empty() {
@@ -1102,7 +1106,7 @@ fn scan_input_folder_for_receipts(app: &tauri::AppHandle) -> Result<(), String> 
             }
         };
         let path = entry.path();
-        if !is_txt_file(&path) {
+        if !matches_configured_input_file(&path, input_file_name) {
             continue;
         }
 
@@ -1433,6 +1437,16 @@ fn is_txt_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+}
+
+fn matches_configured_input_file(path: &Path, input_file_name: &str) -> bool {
+    if input_file_name.trim().is_empty() {
+        return is_txt_file(path);
+    }
+
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(input_file_name.trim()))
 }
 
 fn file_modified_epoch(metadata: &fs::Metadata) -> String {
@@ -2161,6 +2175,24 @@ mod tests {
             extract_explicit_receipt_lookup(contents),
             Some("12345".to_string())
         );
+    }
+
+    #[test]
+    fn blank_input_file_name_matches_txt_files_only() {
+        assert!(matches_configured_input_file(Path::new("inbox.txt"), ""));
+        assert!(!matches_configured_input_file(Path::new("inbox.csv"), ""));
+    }
+
+    #[test]
+    fn configured_input_file_name_matches_exact_file_name_case_insensitive() {
+        assert!(matches_configured_input_file(
+            Path::new("/tmp/POS.TXT"),
+            "pos.txt"
+        ));
+        assert!(!matches_configured_input_file(
+            Path::new("/tmp/other.txt"),
+            "pos.txt"
+        ));
     }
 }
 

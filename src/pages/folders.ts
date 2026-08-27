@@ -1,5 +1,5 @@
 import type { AppSettings, AppState } from "../types";
-import { escapeHtml, pageHeader } from "../ui/html";
+import { escapeHtml, field, pageHeader } from "../ui/html";
 
 export function renderFoldersPage(state: AppState) {
   return `
@@ -12,7 +12,10 @@ export function renderFoldersPage(state: AppState) {
 
       <div class="folder-stack">
         ${folderField("outputDirectory", "Output Folder", "Where Demo POS writes WinCleaners CSV exports.", state.settings.outputDirectory)}
-        ${folderField("inputDirectory", "Input Folder", "Where Demo POS can read OAS responses or confirmations.", state.settings.inputDirectory)}
+        <div class="input-folder-group">
+          ${folderField("inputDirectory", "Input Folder", "Where Demo POS reads receipt print command files.", state.settings.inputDirectory)}
+          ${field("settings.inputFileName", "Input File Name", state.settings.inputFileName, "Optional. Leave blank to scan every .txt file in the input folder.")}
+        </div>
       </div>
     </section>
   `;

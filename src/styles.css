@@ -289,6 +289,12 @@ button:disabled {
   min-width: 0;
 }
 
+.input-folder-group {
+  display: grid;
+  gap: 12px;
+  max-width: 860px;
+}
+
 .folder-field label,
 .field span {
   display: block;

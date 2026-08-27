@@ -19,6 +19,7 @@ export type PageId =
 export interface AppSettings {
   posSystem: PosSystemId;
   inputDirectory: string;
+  inputFileName: string;
   outputDirectory: string;
   outputFileName: string;
   exportOperation: ExportOperation;

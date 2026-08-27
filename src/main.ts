@@ -32,6 +32,7 @@ import type {
 const defaultSettings: AppSettings = {
   posSystem: "spot",
   inputDirectory: "",
+  inputFileName: "",
   outputDirectory: "",
   outputFileName: "",
   exportOperation: "create",
@@ -461,7 +462,7 @@ function updateValue(path: string, value: string) {
   if (path.startsWith("settings.")) {
     const key = path.replace("settings.", "") as keyof Pick<
       AppSettings,
-      "inputDirectory" | "outputDirectory" | "outputFileName" | "receiptPrinterPath"
+      "inputDirectory" | "inputFileName" | "outputDirectory" | "outputFileName" | "receiptPrinterPath"
     >;
     state.settings[key] = value;
     return;
