@@ -1,5 +1,5 @@
 import type { AppSettings, AppState } from "../types";
-import { escapeAttribute, pageHeader } from "../ui/html";
+import { escapeHtml, pageHeader } from "../ui/html";
 
 export function renderFoldersPage(state: AppState) {
   return `
@@ -21,13 +21,20 @@ export function renderFoldersPage(state: AppState) {
 function folderField(key: keyof AppSettings, label: string, description: string, value: string) {
   return `
     <div class="folder-field">
-      <div>
-        <label>${label}</label>
-        <p>${description}</p>
-      </div>
-      <div class="folder-row">
-        <input data-bind="settings.${key}" value="${escapeAttribute(value)}" placeholder="/path/to/folder" />
-        <button class="icon-button" title="Choose folder" data-action="choose-folder" data-folder-key="${key}">...</button>
+      <div class="folder-field-main">
+        <div class="folder-copy">
+          <label>${escapeHtml(label)}</label>
+          <p>${escapeHtml(description)}</p>
+          ${
+            value
+              ? `<div class="folder-path"><span class="folder-status-dot" aria-hidden="true"></span><code>${escapeHtml(value)}</code></div>`
+              : `<p class="folder-empty">No folder selected</p>`
+          }
+        </div>
+        <button class="primary-button browse-folder-button" title="Choose folder" data-action="choose-folder" data-folder-key="${key}">
+          <span class="folder-button-icon" aria-hidden="true"></span>
+          Browse
+        </button>
       </div>
     </div>
   `;
