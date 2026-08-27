@@ -14,7 +14,7 @@ export function renderGarmentsPage(state: AppState) {
           <h1>Create Garments</h1>
           <p>${garmentDescription(state.settings.posSystem)}</p>
         </div>
-        <button class="secondary-button" data-action="add-garment">+ Add Garment</button>
+        <button class="secondary-button" data-action="add-garment">Create New Garment</button>
       </div>
 
       <div class="record-editor">
@@ -73,8 +73,8 @@ function emptyGarment() {
   return `
     <div class="empty-state record-form">
       <h2>No garment selected</h2>
-      <p>Add a garment when you are ready to enter item details.</p>
-      <button class="primary-button" data-action="add-garment">Add Garment</button>
+      <p>Use the button below to start a blank garment record.</p>
+      <button class="primary-button" data-action="add-garment">Create New Garment</button>
     </div>
   `;
 }

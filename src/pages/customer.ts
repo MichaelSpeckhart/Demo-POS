@@ -17,7 +17,7 @@ export function renderCustomerPage(state: AppState) {
               ? "These fields map directly to the Comp-U-Sort CUSTOMER_CREATE row."
               : "These fields map directly to the WinCleaners CUSTOMER_CREATE row."}</p>
         </div>
-        ${state.customerDraftActive ? "" : `<button class="secondary-button" data-action="add-customer">+ Add Customer</button>`}
+        <button class="secondary-button" data-action="add-customer">Create New Customer</button>
       </div>
 
       ${state.customerDraftActive ? customerForm(state, isSpot) : emptyCustomer()}
@@ -64,8 +64,8 @@ function emptyCustomer() {
   return `
     <div class="empty-state">
       <h2>No customer selected</h2>
-      <p>Start with an empty customer record when you are ready to enter one.</p>
-      <button class="primary-button" data-action="add-customer">Add Customer</button>
+      <p>Use the button below to start a blank customer record.</p>
+      <button class="primary-button" data-action="add-customer">Create New Customer</button>
     </div>
   `;
 }

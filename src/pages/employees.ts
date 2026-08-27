@@ -15,7 +15,7 @@ export function renderEmployeesPage(state: AppState) {
             ? "Employees become EMPLOYEE_CREATE rows at the top of the Comp-U-Sort POS.txt export."
             : "Employee rows are only exported when White Conveyors is selected."}</p>
         </div>
-        <button class="secondary-button" data-action="add-employee">+ Add Employee</button>
+        <button class="secondary-button" data-action="add-employee">Create New Employee</button>
       </div>
 
       <div class="record-editor">
@@ -53,8 +53,8 @@ function emptyEmployee() {
   return `
     <div class="empty-state record-form">
       <h2>No employee selected</h2>
-      <p>Add an employee when you are ready to enter employee details.</p>
-      <button class="primary-button" data-action="add-employee">Add Employee</button>
+      <p>Use the button below to start a blank employee record.</p>
+      <button class="primary-button" data-action="add-employee">Create New Employee</button>
     </div>
   `;
 }

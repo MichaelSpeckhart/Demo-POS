@@ -17,7 +17,7 @@ export function renderTicketPage(state: AppState) {
               ? "These fields map directly to the Comp-U-Sort TICKET_CREATE row."
               : "These fields map directly to the WinCleaners TICKET_CREATE row."}</p>
         </div>
-        ${state.ticketDraftActive ? "" : `<button class="secondary-button" data-action="add-ticket">+ Add ${isSpot ? "Invoice" : "Ticket"}</button>`}
+        <button class="secondary-button" data-action="add-ticket">Create New ${isSpot ? "Invoice" : "Ticket"}</button>
       </div>
 
       ${state.ticketDraftActive ? ticketForm(state, isSpot, isWhiteConveyors) : emptyTicket(isSpot)}
@@ -133,8 +133,8 @@ function emptyTicket(isSpot: boolean) {
   return `
     <div class="empty-state">
       <h2>No ${label.toLowerCase()} selected</h2>
-      <p>Start with an empty ${label.toLowerCase()} record when you are ready to enter one.</p>
-      <button class="primary-button" data-action="add-ticket">Add ${label}</button>
+      <p>Use the button below to start a blank ${label.toLowerCase()} record.</p>
+      <button class="primary-button" data-action="add-ticket">Create New ${label}</button>
     </div>
   `;
 }
