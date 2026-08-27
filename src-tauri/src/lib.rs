@@ -18,6 +18,8 @@ struct AppSettings {
     output_file_name: String,
     #[serde(default = "default_export_operation")]
     export_operation: String,
+    #[serde(default)]
+    receipt_printer_path: String,
 }
 
 impl Default for AppSettings {
@@ -28,6 +30,7 @@ impl Default for AppSettings {
             output_directory: String::new(),
             output_file_name: String::new(),
             export_operation: default_export_operation(),
+            receipt_printer_path: String::new(),
         }
     }
 }
@@ -126,6 +129,22 @@ struct Garment {
 struct Employee {
     employee_number: String,
     employee_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptPrinterInfo {
+    path: String,
+    description: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrintReceiptRequest {
+    printer_path: String,
+    customer: Customer,
+    ticket: Ticket,
+    garments: Vec<Garment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1189,6 +1208,473 @@ fn choose_folder_impl(title: String) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+#[tauri::command]
+fn discover_receipt_printers() -> Result<Vec<ReceiptPrinterInfo>, String> {
+    discover_receipt_printers_impl()
+}
+
+#[tauri::command]
+fn test_print_receipt(printer_path: String) -> Result<(), String> {
+    if printer_path.trim().is_empty() {
+        return Err("Choose a receipt printer before testing.".to_string());
+    }
+
+    let mut receipt = escpos_init();
+    receipt.extend_from_slice(&[0x1B, 0x61, 0x01, 0x1B, 0x45, 0x01]);
+    receipt.extend_from_slice(b"Demo POS\n");
+    receipt.extend_from_slice(&[0x1B, 0x45, 0x00]);
+    receipt.extend_from_slice(b"Receipt printer test\n");
+    receipt.extend_from_slice(b"------------------------------\n");
+    receipt.extend_from_slice(b"Printer connection is working.\n");
+    receipt.extend_from_slice(b"\n\n\n");
+    receipt.extend_from_slice(&[0x1D, 0x56, 0x42, 0x03]);
+    send_escpos(printer_path.trim(), &receipt)
+}
+
+#[tauri::command]
+fn print_receipt(request: PrintReceiptRequest) -> Result<(), String> {
+    if request.printer_path.trim().is_empty() {
+        return Err("Choose a receipt printer before printing.".to_string());
+    }
+
+    let receipt = build_receipt(&request.customer, &request.ticket, &request.garments);
+    send_escpos(request.printer_path.trim(), &receipt)
+}
+
+fn build_receipt(customer: &Customer, ticket: &Ticket, garments: &[Garment]) -> Vec<u8> {
+    let mut receipt = escpos_init();
+
+    receipt.extend_from_slice(&[0x1B, 0x61, 0x01, 0x1B, 0x45, 0x01, 0x1D, 0x21, 0x10]);
+    receipt.extend_from_slice(b"Demo POS\n");
+    receipt.extend_from_slice(&[0x1D, 0x21, 0x00, 0x1B, 0x45, 0x00]);
+    receipt.extend_from_slice(b"------------------------------\n");
+    receipt.extend_from_slice(&[0x1B, 0x61, 0x00]);
+
+    push_receipt_line(
+        &mut receipt,
+        "Customer",
+        format!(
+            "{} {}",
+            customer.first_name.trim(),
+            customer.last_name.trim()
+        )
+        .trim(),
+    );
+    push_receipt_line(&mut receipt, "Account", customer.account_number.trim());
+    push_receipt_line(&mut receipt, "Phone", customer.phone_number.trim());
+    push_receipt_line(&mut receipt, "Ticket", ticket.ticket_number.trim());
+    push_receipt_line(
+        &mut receipt,
+        "Invoice",
+        ticket.display_invoice_number.trim(),
+    );
+    push_receipt_line(&mut receipt, "Promised", ticket.promised_date_time.trim());
+    push_receipt_line(
+        &mut receipt,
+        "Ready",
+        format!("{} {}", ticket.ready_date, ticket.ready_time).trim(),
+    );
+
+    let export_garments: Vec<&Garment> = garments
+        .iter()
+        .filter(|garment| !garment.id.trim().is_empty() || !garment.description.trim().is_empty())
+        .collect();
+    if !export_garments.is_empty() {
+        receipt.extend_from_slice(b"------------------------------\n");
+        receipt.extend_from_slice(b"Garments\n");
+        for garment in export_garments {
+            let line = format!("{}  {}\n", garment.id.trim(), garment.description.trim());
+            receipt.extend_from_slice(line.as_bytes());
+        }
+    }
+
+    if !ticket.comments.trim().is_empty() {
+        receipt.extend_from_slice(b"------------------------------\n");
+        receipt.extend_from_slice(ticket.comments.trim().as_bytes());
+        receipt.push(0x0A);
+    }
+
+    receipt.extend_from_slice(b"------------------------------\n");
+    receipt.extend_from_slice(b"\n\n\n");
+    receipt.extend_from_slice(&[0x1D, 0x56, 0x42, 0x03]);
+    receipt
+}
+
+fn escpos_init() -> Vec<u8> {
+    vec![0x1B, 0x40, 0x0A]
+}
+
+fn push_receipt_line(receipt: &mut Vec<u8>, label: &str, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+
+    let line = format!("{label}: {}\n", value.trim());
+    receipt.extend_from_slice(line.as_bytes());
+}
+
+fn parse_vid_pid(value: &str) -> Result<(u16, u16), String> {
+    let parts: Vec<&str> = value.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(format!("Expected VID:PID format, got: {value}"));
+    }
+
+    let vid = u16::from_str_radix(parts[0].trim(), 16)
+        .map_err(|_| format!("Invalid vendor ID: {}", parts[0]))?;
+    let pid = u16::from_str_radix(parts[1].trim(), 16)
+        .map_err(|_| format!("Invalid product ID: {}", parts[1]))?;
+    Ok((vid, pid))
+}
+
+fn looks_like_ip(value: &str) -> bool {
+    let host = value.splitn(2, ':').next().unwrap_or(value);
+    let parts: Vec<&str> = host.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok())
+}
+
+fn is_receipt_printer_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("epson")
+        || lower.contains("tm-")
+        || lower.contains("tm_")
+        || lower.contains("receipt")
+        || lower.contains("thermal")
+        || lower.contains("star")
+        || lower.contains("bixolon")
+        || lower.contains("citizen")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn vendor_name(vid: u16) -> &'static str {
+    match vid {
+        0x04b8 => "Epson",
+        0x0519 => "Star Micronics",
+        0x1504 => "Bixolon",
+        0x1d90 => "Citizen",
+        0x0dd4 => "Custom",
+        0x0fe6 => "ICS",
+        _ => "",
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
+    use std::collections::HashSet;
+
+    let mut printers = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Ok(entries) = fs::read_dir("/dev") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("cu.usb")
+                || name.starts_with("cu.usbserial")
+                || name.starts_with("cu.usbmodem")
+            {
+                let path = format!("/dev/{name}");
+                if seen.insert(path.clone()) {
+                    printers.push(ReceiptPrinterInfo {
+                        path,
+                        description: "USB Serial Receipt Printer".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("lpstat").arg("-p").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if !line.starts_with("printer ") {
+                continue;
+            }
+            let rest = &line["printer ".len()..];
+            let name = rest.split_whitespace().next().unwrap_or("").to_string();
+            if name.is_empty() || !is_receipt_printer_name(&name) {
+                continue;
+            }
+            if seen.insert(name.clone()) {
+                printers.push(ReceiptPrinterInfo {
+                    path: name,
+                    description: "CUPS Receipt Printer Queue".to_string(),
+                });
+            }
+        }
+    }
+
+    let devices = rusb::devices().map_err(|error| format!("USB enumeration error: {error}"))?;
+    for device in devices.iter() {
+        let Ok(desc) = device.device_descriptor() else {
+            continue;
+        };
+        let vid = desc.vendor_id();
+        let pid = desc.product_id();
+        let name = vendor_name(vid);
+        if name.is_empty() {
+            continue;
+        }
+        let path = format!("{vid:04x}:{pid:04x}");
+        if seen.insert(path.clone()) {
+            printers.push(ReceiptPrinterInfo {
+                path,
+                description: format!("{name} USB Receipt Printer"),
+            });
+        }
+    }
+
+    printers.sort_by(|a, b| a.description.cmp(&b.description).then(a.path.cmp(&b.path)));
+    Ok(printers)
+}
+
+#[cfg(target_os = "windows")]
+fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
+    use std::collections::HashSet;
+
+    let mut printers = Vec::new();
+    let mut seen = HashSet::new();
+
+    let printer_script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { "$($_.Name)|$($_.PortName)" }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", printer_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let name = parts[0].trim().to_string();
+            let port = parts[1].trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let on_usb = port.to_uppercase().starts_with("USB");
+            if !on_usb && !is_receipt_printer_name(&name) {
+                continue;
+            }
+            if seen.insert(name.to_lowercase()) {
+                printers.push(ReceiptPrinterInfo {
+                    path: name.clone(),
+                    description: format!("Windows Printer Queue - {name}"),
+                });
+            }
+        }
+    }
+
+    let pnp_script = r#"Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' -or $_.DeviceID -match 'VID_04B8|VID_0519|VID_1504|VID_1D90|VID_0DD4|VID_0FE6' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
+    if let Ok(output) = Command::new("powershell")
+        .args(["-NoProfile", "-Command", pnp_script])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.splitn(2, '|').collect();
+            if parts.is_empty() {
+                continue;
+            }
+            let name = parts[0].trim().to_string();
+            let device_id = parts.get(1).copied().unwrap_or("").trim();
+            if name.is_empty() {
+                continue;
+            }
+
+            let path = if let Some((vid, pid)) = parse_vid_pid_from_device_id(device_id) {
+                format!("{vid:04x}:{pid:04x}")
+            } else if let Some(start) = name.find("COM") {
+                let com: String = name[start..]
+                    .chars()
+                    .take_while(|character| character.is_ascii_alphanumeric())
+                    .collect();
+                format!("\\\\.\\{com}")
+            } else {
+                continue;
+            };
+
+            if seen.insert(path.to_lowercase()) {
+                printers.push(ReceiptPrinterInfo {
+                    path,
+                    description: name,
+                });
+            }
+        }
+    }
+
+    printers.sort_by(|a, b| a.description.cmp(&b.description).then(a.path.cmp(&b.path)));
+    Ok(printers)
+}
+
+#[cfg(target_os = "windows")]
+fn parse_vid_pid_from_device_id(device_id: &str) -> Option<(u16, u16)> {
+    let upper = device_id.to_uppercase();
+    let vid_pos = upper.find("VID_")? + 4;
+    let pid_pos = upper.find("PID_")? + 4;
+    if vid_pos + 4 > device_id.len() || pid_pos + 4 > device_id.len() {
+        return None;
+    }
+    let vid = u16::from_str_radix(&device_id[vid_pos..vid_pos + 4], 16).ok()?;
+    let pid = u16::from_str_radix(&device_id[pid_pos..pid_pos + 4], 16).ok()?;
+    Some((vid, pid))
+}
+
+#[cfg(target_os = "windows")]
+fn send_raw_windows_printer(printer_name: &str, data: &[u8]) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::winspool::{
+        ClosePrinter, EndDocPrinter, EndPagePrinter, OpenPrinterW, StartDocPrinterW,
+        StartPagePrinter, WritePrinter, DOC_INFO_1W,
+    };
+
+    fn to_wide(value: &str) -> Vec<u16> {
+        OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let mut name_w = to_wide(printer_name);
+    let mut datatype_w = to_wide("RAW");
+    let mut docname_w = to_wide("Demo POS Receipt");
+    let mut handle = ptr::null_mut();
+
+    unsafe {
+        if OpenPrinterW(name_w.as_mut_ptr(), &mut handle, ptr::null_mut()) == 0 {
+            return Err(format!(
+                "Cannot open printer '{}': {}",
+                printer_name,
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut doc_info = DOC_INFO_1W {
+            pDocName: docname_w.as_mut_ptr(),
+            pOutputFile: ptr::null_mut(),
+            pDatatype: datatype_w.as_mut_ptr(),
+        };
+        let job = StartDocPrinterW(handle, 1, &mut doc_info as *mut _ as *mut _);
+        if job == 0 {
+            ClosePrinter(handle);
+            return Err(format!(
+                "StartDocPrinter failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        if StartPagePrinter(handle) == 0 {
+            EndDocPrinter(handle);
+            ClosePrinter(handle);
+            return Err(format!(
+                "StartPagePrinter failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut written: DWORD = 0;
+        let ok = WritePrinter(
+            handle,
+            data.as_ptr() as *mut _,
+            data.len() as DWORD,
+            &mut written,
+        );
+        EndPagePrinter(handle);
+        EndDocPrinter(handle);
+        ClosePrinter(handle);
+
+        if ok == 0 {
+            return Err(format!(
+                "WritePrinter failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn send_escpos(printer_path: &str, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+
+    if let Ok((vid, pid)) = parse_vid_pid(printer_path) {
+        use escpos_rs::{Printer, PrinterProfile};
+        let profile = PrinterProfile::usb_builder(vid, pid).build();
+        let printer = Printer::new(profile)
+            .map_err(|error| format!("Failed to connect to printer: {error}"))?
+            .ok_or_else(|| {
+                format!(
+                    "Printer {printer_path} not found. Make sure it is connected and powered on."
+                )
+            })?;
+        return printer
+            .raw(data)
+            .map_err(|error| format!("Failed to send data to printer: {error}"));
+    }
+
+    if looks_like_ip(printer_path) {
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let addr = if printer_path.contains(':') {
+            printer_path.to_string()
+        } else {
+            format!("{printer_path}:9100")
+        };
+        let mut stream = TcpStream::connect(&addr)
+            .map_err(|error| format!("Cannot connect to {addr}: {error}"))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| format!("Timeout error: {error}"))?;
+        stream
+            .write_all(data)
+            .map_err(|error| format!("Network write error: {error}"))?;
+        stream
+            .flush()
+            .map_err(|error| format!("Network flush error: {error}"))?;
+        return Ok(());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if !printer_path.starts_with("/dev/") {
+        let tmp = std::env::temp_dir().join("demo_pos_escpos.bin");
+        fs::write(&tmp, data).map_err(|error| format!("Temp file error: {error}"))?;
+        let tmp_path = tmp
+            .to_str()
+            .ok_or_else(|| "Invalid temporary print file path".to_string())?;
+        let output = Command::new("lp")
+            .args(["-d", printer_path, "-o", "raw", tmp_path])
+            .output()
+            .map_err(|error| format!("lp command failed: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "lp error: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let is_device_path =
+            printer_path.starts_with("\\\\.\\") || printer_path.to_uppercase().starts_with("COM");
+        if !is_device_path {
+            return send_raw_windows_printer(printer_path, data);
+        }
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(printer_path)
+        .map_err(|error| format!("Cannot open {printer_path}: {error}"))?;
+    file.write_all(data)
+        .map_err(|error| format!("Write error: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("Flush error: {error}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1209,8 +1695,13 @@ pub fn run() {
             delete_employee,
             check_folder,
             choose_folder,
-            write_export_file
+            write_export_file,
+            discover_receipt_printers,
+            test_print_receipt,
+            print_receipt
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+pub async fn file_watch() {}

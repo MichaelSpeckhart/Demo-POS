@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { adapters } from "./formatters";
-import { hasExportData } from "./formatters/recordPresence";
+import { hasCustomerData, hasExportData, hasGarmentData, hasTicketData } from "./formatters/recordPresence";
 import { renderCustomerPage } from "./pages/customer";
 import { renderDatabasePage } from "./pages/database";
 import { renderEmployeesPage } from "./pages/employees";
@@ -8,6 +8,7 @@ import { renderExportPage } from "./pages/export";
 import { renderFoldersPage } from "./pages/folders";
 import { renderGarmentsPage } from "./pages/garments";
 import { renderPosSystemPage } from "./pages/posSystem";
+import { renderPrinterPage } from "./pages/printer";
 import { renderTicketPage } from "./pages/ticket";
 import { resolveOutputFileName } from "./outputFileName";
 import AppLogo from "./assets/Logo1.png";
@@ -22,6 +23,7 @@ import type {
   Garment,
   GarmentRecord,
   PageId,
+  ReceiptPrinterInfo,
   Ticket,
   TicketRecord,
   WriteExportRequest,
@@ -33,6 +35,7 @@ const defaultSettings: AppSettings = {
   outputDirectory: "",
   outputFileName: "",
   exportOperation: "create",
+  receiptPrinterPath: "",
 };
 
 function defaultCustomer(): Customer {
@@ -112,6 +115,7 @@ const state: AppState = {
   status: "",
   statusKind: "neutral",
   databaseSummary: null,
+  receiptPrinters: [],
 };
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -127,6 +131,7 @@ let deleteHandlerBound = false;
 const pages: { id: PageId; label: string; render: (state: AppState) => string }[] = [
   { id: "pos", label: "POS System", render: renderPosSystemPage },
   { id: "folders", label: "Folders", render: renderFoldersPage },
+  { id: "printer", label: "Printer", render: renderPrinterPage },
   { id: "employees", label: "Employees", render: renderEmployeesPage },
   { id: "customer", label: "Customer", render: renderCustomerPage },
   { id: "ticket", label: "Ticket", render: renderTicketPage },
@@ -251,6 +256,15 @@ function bindEvents() {
       } else {
         void saveCurrentRecord(bindPath).then(refreshDatabaseSummary);
       }
+    });
+  });
+
+  document.querySelectorAll<HTMLSelectElement>("[data-action='select-receipt-printer']").forEach((select) => {
+    select.addEventListener("change", () => {
+      state.settings.receiptPrinterPath = select.value;
+      state.status = "";
+      render();
+      void saveSettings();
     });
   });
 
@@ -387,6 +401,18 @@ function bindEvents() {
     void exportFile();
   });
 
+  document.querySelector<HTMLButtonElement>("[data-action='scan-printers']")?.addEventListener("click", () => {
+    void scanReceiptPrinters();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='test-receipt-printer']")?.addEventListener("click", () => {
+    void testReceiptPrinter();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='print-receipt']")?.addEventListener("click", () => {
+    void printReceipt();
+  });
+
 }
 
 function bindGlobalDeleteHandler() {
@@ -435,7 +461,7 @@ function updateValue(path: string, value: string) {
   if (path.startsWith("settings.")) {
     const key = path.replace("settings.", "") as keyof Pick<
       AppSettings,
-      "inputDirectory" | "outputDirectory" | "outputFileName"
+      "inputDirectory" | "outputDirectory" | "outputFileName" | "receiptPrinterPath"
     >;
     state.settings[key] = value;
     return;
@@ -672,6 +698,82 @@ async function exportFile() {
     setStatus(`Wrote ${path}`, "success");
   } catch (error) {
     setStatus(`Export failed: ${String(error)}`, "error");
+  }
+}
+
+async function scanReceiptPrinters() {
+  try {
+    state.status = "Scanning for receipt printers...";
+    state.statusKind = "neutral";
+    render();
+    state.receiptPrinters = await invoke<ReceiptPrinterInfo[]>("discover_receipt_printers");
+    const selectedExists = state.receiptPrinters.some(
+      (printer) => printer.path === state.settings.receiptPrinterPath
+    );
+    if (!state.settings.receiptPrinterPath || !selectedExists) {
+      state.settings.receiptPrinterPath = state.receiptPrinters[0]?.path ?? state.settings.receiptPrinterPath;
+      await saveSettings();
+    }
+    state.status = state.receiptPrinters.length === 0
+      ? "No receipt printers found. Enter a printer path manually if needed."
+      : `Found ${state.receiptPrinters.length} receipt printer${state.receiptPrinters.length === 1 ? "" : "s"}.`;
+    state.statusKind = state.receiptPrinters.length === 0 ? "neutral" : "success";
+    render();
+  } catch (error) {
+    setStatus(`Printer scan failed: ${String(error)}`, "error");
+  }
+}
+
+async function testReceiptPrinter() {
+  if (!state.settings.receiptPrinterPath.trim()) {
+    setStatus("Choose a receipt printer before testing.", "error");
+    state.activePage = "printer";
+    return;
+  }
+
+  try {
+    state.status = "Sending test receipt...";
+    state.statusKind = "neutral";
+    render();
+    await invoke("test_print_receipt", { printerPath: state.settings.receiptPrinterPath });
+    setStatus("Sent test receipt.", "success");
+  } catch (error) {
+    setStatus(`Test print failed: ${String(error)}`, "error");
+  }
+}
+
+async function printReceipt() {
+  if (!state.settings.receiptPrinterPath.trim()) {
+    setStatus("Choose a receipt printer before printing.", "error");
+    state.activePage = "printer";
+    return;
+  }
+
+  if (
+    !hasCustomerData(state.customer) &&
+    !hasTicketData(state.ticket) &&
+    !state.garments.some(hasGarmentData)
+  ) {
+    setStatus("Add record data before printing a receipt.", "error");
+    state.activePage = "printer";
+    return;
+  }
+
+  try {
+    state.status = "Sending receipt...";
+    state.statusKind = "neutral";
+    render();
+    await invoke("print_receipt", {
+      request: {
+        printerPath: state.settings.receiptPrinterPath,
+        customer: state.customer,
+        ticket: state.ticket,
+        garments: state.garments,
+      },
+    });
+    setStatus("Sent receipt.", "success");
+  } catch (error) {
+    setStatus(`Receipt print failed: ${String(error)}`, "error");
   }
 }
 

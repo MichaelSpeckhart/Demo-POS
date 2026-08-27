@@ -37,6 +37,7 @@ jobs:
             curl \
             file \
             libayatana-appindicator3-dev \
+            libusb-1.0-0-dev \
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \

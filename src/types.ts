@@ -8,6 +8,7 @@ export type ExportOperation =
 export type PageId =
   | "pos"
   | "folders"
+  | "printer"
   | "employees"
   | "customer"
   | "ticket"
@@ -21,6 +22,7 @@ export interface AppSettings {
   outputDirectory: string;
   outputFileName: string;
   exportOperation: ExportOperation;
+  receiptPrinterPath: string;
 }
 
 export interface Customer {
@@ -77,6 +79,11 @@ export interface WriteExportRequest {
   contents: string;
 }
 
+export interface ReceiptPrinterInfo {
+  path: string;
+  description: string;
+}
+
 export interface PosAdapter {
   id: PosSystemId;
   name: string;
@@ -106,6 +113,7 @@ export interface AppState {
   status: string;
   statusKind: "neutral" | "success" | "error";
   databaseSummary: DatabaseSummary | null;
+  receiptPrinters: ReceiptPrinterInfo[];
 }
 
 export interface DatabaseSummary {

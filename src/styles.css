@@ -587,6 +587,17 @@ select:focus {
   max-width: 980px;
 }
 
+.printer-config {
+  max-width: 980px;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 .file-name-preview {
   display: grid;
   align-content: start;
