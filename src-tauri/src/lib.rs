@@ -152,6 +152,13 @@ struct PrintReceiptRequest {
     garments: Vec<Garment>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiptPrintCommand {
+    account_number: String,
+    ticket_number: String,
+    ticket_message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceData {
@@ -1149,7 +1156,7 @@ fn process_receipt_input_file(
             file_size,
             "",
             "ignored",
-            "No PRINT_RECIEPT command found.",
+            "No RECEIPT_PRINT command found.",
         )?;
         return Ok(());
     }
@@ -1161,7 +1168,7 @@ fn process_receipt_input_file(
             &path_string,
             &modified_at,
             file_size,
-            "PRINT_RECIEPT",
+            "RECEIPT_PRINT",
             "printed",
             &format!("Printed receipt for ticket {ticket_number}."),
         ),
@@ -1170,7 +1177,7 @@ fn process_receipt_input_file(
             &path_string,
             &modified_at,
             file_size,
-            "PRINT_RECIEPT",
+            "RECEIPT_PRINT",
             "failed",
             &error,
         ),
@@ -1182,32 +1189,54 @@ fn print_receipt_from_command(
     printer_path: &str,
     contents: &str,
 ) -> Result<String, String> {
-    let ticket_number = receipt_command_ticket_number(conn, contents)?;
-    let workspace = load_workspace_by_ticket_number(conn, &ticket_number)?
-        .ok_or_else(|| format!("Ticket {ticket_number} was not found in SQLite."))?;
-    let receipt = build_receipt(&workspace.customer, &workspace.ticket, &workspace.garments);
+    let command = receipt_print_command(conn, contents)?;
+    let workspace = load_workspace_by_ticket_number(conn, &command.ticket_number)?
+        .ok_or_else(|| format!("Ticket {} was not found in SQLite.", command.ticket_number))?;
+    if workspace.customer.account_number.trim() != command.account_number.trim() {
+        return Err(format!(
+            "Ticket {} belongs to account {}, not account {}.",
+            command.ticket_number, workspace.customer.account_number, command.account_number
+        ));
+    }
+
+    let receipt = build_receipt_with_message(
+        &workspace.customer,
+        &workspace.ticket,
+        &workspace.garments,
+        &command.ticket_message,
+    );
     send_escpos(printer_path, &receipt)?;
-    Ok(ticket_number)
+    Ok(command.ticket_number)
 }
 
-fn receipt_command_ticket_number(conn: &Connection, contents: &str) -> Result<String, String> {
-    if let Some(value) = extract_explicit_receipt_lookup(contents) {
-        return resolve_ticket_lookup(conn, &value);
+fn receipt_print_command(conn: &Connection, contents: &str) -> Result<ReceiptPrintCommand, String> {
+    if let Some(command) = extract_receipt_print_command(contents) {
+        return resolve_receipt_print_command(conn, command);
     }
 
     if let Some(account_number) = extract_keyed_value(contents, &["ACCOUNT_NUMBER", "ACCOUNT"]) {
-        return resolve_account_lookup(conn, &account_number);
+        let ticket_number = resolve_account_lookup(conn, &account_number)?;
+        return Ok(ReceiptPrintCommand {
+            account_number,
+            ticket_number,
+            ticket_message: extract_keyed_value(contents, &["TICKET_MESSAGE"]).unwrap_or_default(),
+        });
     }
 
-    resolve_embedded_ticket_lookup(conn, contents)
+    let ticket_number = resolve_embedded_ticket_lookup(conn, contents)?;
+    let workspace = load_workspace_by_ticket_number(conn, &ticket_number)?
+        .ok_or_else(|| format!("Ticket {ticket_number} was not found in SQLite."))?;
+    Ok(ReceiptPrintCommand {
+        account_number: workspace.customer.account_number,
+        ticket_number,
+        ticket_message: extract_keyed_value(contents, &["TICKET_MESSAGE"]).unwrap_or_default(),
+    })
 }
 
 fn resolve_ticket_lookup(conn: &Connection, value: &str) -> Result<String, String> {
     let lookup = value.trim();
     if lookup.is_empty() {
-        return Err(
-            "PRINT_RECIEPT command did not include a ticket or invoice number.".to_string(),
-        );
+        return Err("RECEIPT_PRINT command did not include a ticket number.".to_string());
     }
 
     let ticket_number = conn
@@ -1228,7 +1257,24 @@ fn resolve_ticket_lookup(conn: &Connection, value: &str) -> Result<String, Strin
         .map_err(|e| e.to_string())?;
 
     ticket_number
-        .ok_or_else(|| format!("No SQLite ticket matched PRINT_RECIEPT lookup value '{lookup}'."))
+        .ok_or_else(|| format!("No SQLite ticket matched RECEIPT_PRINT lookup value '{lookup}'."))
+}
+
+fn resolve_receipt_print_command(
+    conn: &Connection,
+    mut command: ReceiptPrintCommand,
+) -> Result<ReceiptPrintCommand, String> {
+    if command.ticket_number.trim().is_empty() {
+        return Err("RECEIPT_PRINT command is missing TICKET_NUMBER.".to_string());
+    }
+
+    command.ticket_number = resolve_ticket_lookup(conn, &command.ticket_number)?;
+    if command.account_number.trim().is_empty() {
+        let workspace = load_workspace_by_ticket_number(conn, &command.ticket_number)?
+            .ok_or_else(|| format!("Ticket {} was not found in SQLite.", command.ticket_number))?;
+        command.account_number = workspace.customer.account_number;
+    }
+    Ok(command)
 }
 
 fn resolve_account_lookup(conn: &Connection, account_number: &str) -> Result<String, String> {
@@ -1258,7 +1304,7 @@ fn resolve_account_lookup(conn: &Connection, account_number: &str) -> Result<Str
             account_number.trim()
         )),
         _ => Err(format!(
-            "Account number '{}' has multiple tickets; include TICKET_NUMBER in the PRINT_RECIEPT file.",
+            "Account number '{}' has multiple tickets; include TICKET_NUMBER in the RECEIPT_PRINT file.",
             account_number.trim()
         )),
     }
@@ -1290,25 +1336,24 @@ fn resolve_embedded_ticket_lookup(conn: &Connection, contents: &str) -> Result<S
             resolve_ticket_lookup(conn, &value)
         }
         0 => Err(
-            "PRINT_RECIEPT command needs a TICKET_NUMBER, invoice number, or matching ticket value."
+            "RECEIPT_PRINT command needs a TICKET_NUMBER, invoice number, or matching ticket value."
                 .to_string(),
         ),
-        _ => Err("PRINT_RECIEPT file matched multiple tickets; include TICKET_NUMBER.".to_string()),
+        _ => Err("RECEIPT_PRINT file matched multiple tickets; include TICKET_NUMBER.".to_string()),
     }
 }
 
-fn extract_explicit_receipt_lookup(contents: &str) -> Option<String> {
-    if let Some(value) = extract_keyed_value(
-        contents,
-        &[
-            "TICKET_NUMBER",
-            "TICKET",
-            "INVOICE_NUMBER",
-            "FULL_INVOICE_NUMBER",
-            "DISPLAY_INVOICE_NUMBER",
-        ],
-    ) {
-        return Some(value);
+fn extract_receipt_print_command(contents: &str) -> Option<ReceiptPrintCommand> {
+    if contains_print_receipt_command(contents) {
+        if let Some(ticket_number) = extract_keyed_value(contents, &["TICKET_NUMBER", "TICKET"]) {
+            return Some(ReceiptPrintCommand {
+                account_number: extract_keyed_value(contents, &["ACCOUNT_NUMBER", "ACCOUNT"])
+                    .unwrap_or_default(),
+                ticket_number,
+                ticket_message: extract_keyed_value(contents, &["TICKET_MESSAGE"])
+                    .unwrap_or_default(),
+            });
+        }
     }
 
     for row in delimited_rows(contents) {
@@ -1316,9 +1361,7 @@ fn extract_explicit_receipt_lookup(contents: &str) -> Option<String> {
             continue;
         }
 
-        if let Some(value) = row.iter().skip(1).find(|value| !value.trim().is_empty()) {
-            return Some(value.trim().to_string());
-        }
+        return Some(receipt_print_command_from_positional_row(&row));
     }
 
     for pair in delimited_rows(contents).windows(2) {
@@ -1337,24 +1380,42 @@ fn extract_explicit_receipt_lookup(contents: &str) -> Option<String> {
             continue;
         }
 
-        for key in [
-            "TICKET_NUMBER",
-            "TICKET",
-            "INVOICE_NUMBER",
-            "FULL_INVOICE_NUMBER",
-            "DISPLAY_INVOICE_NUMBER",
-        ] {
-            if let Some(index) = header.iter().position(|value| normalize_key(value) == key) {
-                if let Some(value) = row.get(index) {
-                    if !value.trim().is_empty() {
-                        return Some(value.trim().to_string());
-                    }
-                }
-            }
-        }
+        return Some(receipt_print_command_from_header_row(header, row));
     }
 
     None
+}
+
+fn receipt_print_command_from_positional_row(row: &[String]) -> ReceiptPrintCommand {
+    if normalize_key(&row[0]) != "RECEIPT_PRINT" && row.len() == 2 {
+        return ReceiptPrintCommand {
+            account_number: String::new(),
+            ticket_number: row.get(1).cloned().unwrap_or_default(),
+            ticket_message: String::new(),
+        };
+    }
+
+    ReceiptPrintCommand {
+        account_number: row.get(1).cloned().unwrap_or_default(),
+        ticket_number: row.get(2).cloned().unwrap_or_default(),
+        ticket_message: row.get(7).cloned().unwrap_or_default(),
+    }
+}
+
+fn receipt_print_command_from_header_row(header: &[String], row: &[String]) -> ReceiptPrintCommand {
+    ReceiptPrintCommand {
+        account_number: header_value(header, row, "ACCOUNT_NUMBER").unwrap_or_default(),
+        ticket_number: header_value(header, row, "TICKET_NUMBER").unwrap_or_default(),
+        ticket_message: header_value(header, row, "TICKET_MESSAGE").unwrap_or_default(),
+    }
+}
+
+fn header_value(header: &[String], row: &[String], key: &str) -> Option<String> {
+    let index = header
+        .iter()
+        .position(|value| normalize_key(value) == key)?;
+    let value = row.get(index)?.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn extract_keyed_value(contents: &str, keys: &[&str]) -> Option<String> {
@@ -1396,20 +1457,47 @@ fn delimited_rows(contents: &str) -> Vec<Vec<String>> {
                 return None;
             }
 
-            Some(
-                trimmed
-                    .split(delimiter)
-                    .map(|value| {
-                        value
-                            .trim()
-                            .trim_matches('"')
-                            .trim_matches('\'')
-                            .to_string()
-                    })
-                    .collect(),
-            )
+            Some(split_delimited_row(trimmed, delimiter))
         })
         .collect()
+}
+
+fn split_delimited_row(line: &str, delimiter: char) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(character) = chars.next() {
+        if character == '"' {
+            if in_quotes && chars.peek() == Some(&'"') {
+                current.push('"');
+                chars.next();
+            } else {
+                in_quotes = !in_quotes;
+            }
+            continue;
+        }
+
+        if character == delimiter && !in_quotes {
+            values.push(clean_delimited_value(&current));
+            current.clear();
+            continue;
+        }
+
+        current.push(character);
+    }
+
+    values.push(clean_delimited_value(&current));
+    values
+}
+
+fn clean_delimited_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
 }
 
 fn normalize_key(value: &str) -> String {
@@ -1425,12 +1513,14 @@ fn normalize_key(value: &str) -> String {
 
 fn contains_print_receipt_command(contents: &str) -> bool {
     let upper = contents.to_ascii_uppercase();
-    upper.contains("PRINT_RECIEPT") || upper.contains("PRINT_RECEIPT")
+    upper.contains("RECEIPT_PRINT")
+        || upper.contains("PRINT_RECIEPT")
+        || upper.contains("PRINT_RECEIPT")
 }
 
 fn is_print_receipt_command(value: &str) -> bool {
     let normalized = normalize_key(value);
-    normalized == "PRINT_RECIEPT" || normalized == "PRINT_RECEIPT"
+    normalized == "RECEIPT_PRINT" || normalized == "PRINT_RECIEPT" || normalized == "PRINT_RECEIPT"
 }
 
 fn is_txt_file(path: &Path) -> bool {
@@ -1707,6 +1797,15 @@ fn print_receipt(request: PrintReceiptRequest) -> Result<(), String> {
 }
 
 fn build_receipt(customer: &Customer, ticket: &Ticket, garments: &[Garment]) -> Vec<u8> {
+    build_receipt_with_message(customer, ticket, garments, "")
+}
+
+fn build_receipt_with_message(
+    customer: &Customer,
+    ticket: &Ticket,
+    garments: &[Garment],
+    ticket_message: &str,
+) -> Vec<u8> {
     let mut receipt = escpos_init();
 
     receipt.extend_from_slice(&[0x1B, 0x61, 0x01, 0x1B, 0x45, 0x01, 0x1D, 0x21, 0x10]);
@@ -1756,6 +1855,12 @@ fn build_receipt(customer: &Customer, ticket: &Ticket, garments: &[Garment]) -> 
     if !ticket.comments.trim().is_empty() {
         receipt.extend_from_slice(b"------------------------------\n");
         receipt.extend_from_slice(ticket.comments.trim().as_bytes());
+        receipt.push(0x0A);
+    }
+
+    if !ticket_message.trim().is_empty() {
+        receipt.extend_from_slice(b"------------------------------\n");
+        receipt.extend_from_slice(ticket_message.trim().as_bytes());
         receipt.push(0x0A);
     }
 
@@ -2146,34 +2251,62 @@ mod tests {
 
     #[test]
     fn recognizes_print_receipt_command_spellings() {
+        assert!(contains_print_receipt_command("RECEIPT_PRINT"));
         assert!(contains_print_receipt_command("PRINT_RECIEPT"));
         assert!(contains_print_receipt_command("print_receipt"));
     }
 
     #[test]
-    fn extracts_keyed_ticket_number() {
-        let contents = "TRANSACTION=PRINT_RECIEPT\nTICKET_NUMBER=12345\n";
+    fn extracts_keyed_receipt_print_command() {
+        let contents = "TRANSACTION=RECEIPT_PRINT\nACCOUNT_NUMBER=42\nTICKET_NUMBER=12345\nTICKET_MESSAGE=Split ticket\n";
         assert_eq!(
-            extract_explicit_receipt_lookup(contents),
-            Some("12345".to_string())
+            extract_receipt_print_command(contents),
+            Some(ReceiptPrintCommand {
+                account_number: "42".to_string(),
+                ticket_number: "12345".to_string(),
+                ticket_message: "Split ticket".to_string(),
+            })
         );
     }
 
     #[test]
-    fn extracts_ticket_number_from_command_row() {
-        let contents = "PRINT_RECIEPT,12345\n";
+    fn extracts_receipt_print_command_from_positional_row() {
+        let contents =
+            "RECEIPT_PRINT,42,12345,,7,CONV1,LOAD1,Split ticket,08/27/2026,03:10:22 PM\n";
         assert_eq!(
-            extract_explicit_receipt_lookup(contents),
-            Some("12345".to_string())
+            extract_receipt_print_command(contents),
+            Some(ReceiptPrintCommand {
+                account_number: "42".to_string(),
+                ticket_number: "12345".to_string(),
+                ticket_message: "Split ticket".to_string(),
+            })
         );
     }
 
     #[test]
-    fn extracts_ticket_number_from_header_row() {
-        let contents = "TRANSACTION,TICKET_NUMBER\nPRINT_RECIEPT,12345\n";
+    fn extracts_receipt_print_command_from_quoted_positional_row() {
+        let contents =
+            "\"RECEIPT_PRINT\",\"42\",\"12345\",\"\",\"7\",\"CONV1\",\"LOAD1\",\"Split, ticket\",\"08/27/2026\",\"03:10:22 PM\"\n";
         assert_eq!(
-            extract_explicit_receipt_lookup(contents),
-            Some("12345".to_string())
+            extract_receipt_print_command(contents),
+            Some(ReceiptPrintCommand {
+                account_number: "42".to_string(),
+                ticket_number: "12345".to_string(),
+                ticket_message: "Split, ticket".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_receipt_print_command_from_header_row() {
+        let contents = "TRANSACTION,ACCOUNT_NUMBER,TICKET_NUMBER,NOT_USED_1,EMPLOYEE_NUMBER,CONVEYOR_ID,LOADSTATION_ID,TICKET_MESSAGE,TRANSACTION_DATE,TRANSACTION_TIME\nRECEIPT_PRINT,42,12345,,7,CONV1,LOAD1,Split ticket,08/27/2026,03:10:22 PM\n";
+        assert_eq!(
+            extract_receipt_print_command(contents),
+            Some(ReceiptPrintCommand {
+                account_number: "42".to_string(),
+                ticket_number: "12345".to_string(),
+                ticket_message: "Split ticket".to_string(),
+            })
         );
     }
 
