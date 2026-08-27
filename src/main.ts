@@ -252,6 +252,7 @@ function bindEvents() {
     input.addEventListener("input", () => {
       updateValue(input.dataset.bind ?? "", input.value);
       updateLivePreview();
+      updateAddToExportControls();
       const bindPath = input.dataset.bind ?? "";
       if (bindPath.startsWith("settings.")) {
         void saveSettings();
@@ -263,6 +264,7 @@ function bindEvents() {
       const bindPath = input.dataset.bind ?? "";
       updateValue(bindPath, input.value);
       updateLivePreview();
+      updateAddToExportControls();
       if (bindPath.startsWith("settings.")) {
         void saveSettings();
       } else {
@@ -741,6 +743,72 @@ function currentExportData() {
   );
 
   return { customer, ticket, garments, employees };
+}
+
+function updateAddToExportControls() {
+  const customerReady = customerReadyForExport(state.customer, state.settings.posSystem);
+  updateAddToExportButton(
+    "add-customer-to-export",
+    customerReady,
+    state.customerAddedToExport && customerReady,
+    "Customer Added to Export",
+    "Add Customer to Export",
+    "Complete Required Fields"
+  );
+
+  const ticketLabel = state.settings.posSystem === "spot" ? "Invoice" : "Ticket";
+  const ticketParentReady = state.customerAddedToExport && customerReady;
+  const ticketReady = ticketParentReady && ticketReadyForExport(state.ticket, state.settings.posSystem);
+  updateAddToExportButton(
+    "add-ticket-to-export",
+    ticketReady,
+    state.ticketAddedToExport && ticketReady,
+    `${ticketLabel} Added to Export`,
+    `Add ${ticketLabel} to Export`,
+    ticketParentReady ? "Complete Required Fields" : "Add Customer First"
+  );
+
+  const garment = state.garments[state.selectedGarmentIndex];
+  const garmentParentReady = state.ticketAddedToExport && ticketReadyForExport(state.ticket, state.settings.posSystem);
+  const garmentReady = Boolean(garment && garmentParentReady && garmentReadyForExport(garment, state.settings.posSystem));
+  updateAddToExportButton(
+    "add-garment-to-export",
+    garmentReady,
+    Boolean(state.garmentAddedToExport[state.selectedGarmentIndex] && garmentReady),
+    "Garment Added to Export",
+    "Add Garment to Export",
+    garmentParentReady ? "Complete Required Fields" : "Add Ticket First"
+  );
+
+  const employee = state.employees[state.selectedEmployeeIndex];
+  const employeeReady = Boolean(employee && employeeReadyForExport(employee));
+  updateAddToExportButton(
+    "add-employee-to-export",
+    employeeReady,
+    Boolean(state.employeeAddedToExport[state.selectedEmployeeIndex] && employeeReady),
+    "Employee Added to Export",
+    "Add Employee to Export",
+    "Complete Required Fields"
+  );
+}
+
+function updateAddToExportButton(
+  action: string,
+  ready: boolean,
+  added: boolean,
+  addedLabel: string,
+  readyLabel: string,
+  waitingLabel: string
+) {
+  const button = document.querySelector<HTMLButtonElement>(`[data-action='${action}']`);
+  if (!button) {
+    return;
+  }
+
+  button.disabled = !ready || added;
+  button.textContent = added ? addedLabel : ready ? readyLabel : waitingLabel;
+  button.classList.toggle("primary-button", ready && !added);
+  button.classList.toggle("secondary-button", !ready || added);
 }
 
 function addCustomerToExport() {
