@@ -22,7 +22,7 @@ export function renderPrinterPage(state: AppState) {
         </div>
         <div class="form-grid aligned-grid two-column-grid">
           ${printerSelect(state)}
-          ${field("settings.receiptPrinterPath", "Printer Path", state.settings.receiptPrinterPath, "Queue name, VID:PID, IP address, or serial path.")}
+          ${field("settings.receiptPrinterPath", "Printer Path", state.settings.receiptPrinterPath, "Queue name, VID:PID, IP address, tcp://host[:port], or serial path.")}
         </div>
         <div class="action-row">
           <button class="secondary-button" data-action="test-receipt-printer">Test Print</button>

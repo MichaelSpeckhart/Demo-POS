@@ -5,14 +5,11 @@ export function renderConveyorLogPage(state: AppState) {
   const configuredName = state.settings.inputFileName.trim() || "*.txt";
   return `
     <section class="page database-page">
-      <div class="page-heading with-actions">
-        ${pageHeader(
-          "Input Log",
-          "Conveyor File Reads",
-          `Latest reads from ${configuredName} in the configured input folder.`
-        )}
-        <button type="button" class="secondary-button" data-action="refresh-input-log">Refresh</button>
-      </div>
+      ${pageHeader(
+        "Input Log",
+        "Conveyor File Reads",
+        `Latest reads from ${configuredName} in the configured input folder.`
+      )}
 
       ${statusMarkup(state.status, state.statusKind)}
       ${logTable(state.inputFileEvents)}

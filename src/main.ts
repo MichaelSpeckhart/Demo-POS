@@ -140,6 +140,8 @@ if (!app) {
 
 const appRoot = app;
 let workspaceSaveTimer: number | undefined;
+let inputLogPollTimer: number | undefined;
+let inputLogRefreshInFlight = false;
 let deleteHandlerBound = false;
 
 const pages: { id: PageId; label: string; render: (state: AppState) => string }[] = [
@@ -190,6 +192,7 @@ function render() {
   `;
 
   bindEvents();
+  syncInputLogPolling();
 }
 
 function navButton(id: PageId, label: string, active: boolean) {
@@ -210,9 +213,6 @@ function bindEvents() {
         render();
         if (page === "database") {
           void refreshDatabaseSummary();
-        }
-        if (page === "conveyorLog") {
-          void refreshInputFileEvents();
         }
       }
     });
@@ -460,10 +460,6 @@ function bindEvents() {
 
   document.querySelector<HTMLButtonElement>("[data-action='print-receipt']")?.addEventListener("click", () => {
     void printReceipt();
-  });
-
-  document.querySelector<HTMLButtonElement>("[data-action='refresh-input-log']")?.addEventListener("click", () => {
-    void refreshInputFileEvents();
   });
 
 }
@@ -1333,6 +1329,11 @@ async function refreshDatabaseSummary() {
 }
 
 async function refreshInputFileEvents() {
+  if (inputLogRefreshInFlight) {
+    return;
+  }
+
+  inputLogRefreshInFlight = true;
   try {
     state.inputFileEvents = await invoke<InputFileEventRecord[]>("load_input_file_events");
     if (state.activePage === "conveyorLog") {
@@ -1341,6 +1342,25 @@ async function refreshInputFileEvents() {
   } catch (error) {
     state.inputFileEvents = [];
     setStatus(`Input log failed: ${String(error)}`, "error");
+  } finally {
+    inputLogRefreshInFlight = false;
+  }
+}
+
+function syncInputLogPolling() {
+  if (state.activePage === "conveyorLog") {
+    if (inputLogPollTimer === undefined) {
+      void refreshInputFileEvents();
+      inputLogPollTimer = window.setInterval(() => {
+        void refreshInputFileEvents();
+      }, 3000);
+    }
+    return;
+  }
+
+  if (inputLogPollTimer !== undefined) {
+    window.clearInterval(inputLogPollTimer);
+    inputLogPollTimer = undefined;
   }
 }
 

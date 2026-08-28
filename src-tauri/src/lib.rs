@@ -2109,6 +2109,14 @@ fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
     let mut printers = Vec::new();
     let mut seen = HashSet::new();
 
+    if let Ok(queue_printers) = discover_windows_printer_queues() {
+        for printer in queue_printers {
+            if seen.insert(printer.path.to_lowercase()) {
+                printers.push(printer);
+            }
+        }
+    }
+
     let printer_script = r#"Get-CimInstance -ClassName Win32_Printer | ForEach-Object { "$($_.Name)|$($_.PortName)" }"#;
     if let Ok(output) = Command::new("powershell")
         .args(["-NoProfile", "-Command", printer_script])
@@ -2138,7 +2146,7 @@ fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
         }
     }
 
-    let pnp_script = r#"Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+|USB Printing' -or $_.DeviceID -match 'VID_04B8|VID_0519|VID_1504|VID_1D90|VID_0DD4|VID_0FE6' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
+    let pnp_script = r#"Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+' } | ForEach-Object { "$($_.Name)|$($_.DeviceID)" }"#;
     if let Ok(output) = Command::new("powershell")
         .args(["-NoProfile", "-Command", pnp_script])
         .output()
@@ -2150,14 +2158,11 @@ fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
                 continue;
             }
             let name = parts[0].trim().to_string();
-            let device_id = parts.get(1).copied().unwrap_or("").trim();
             if name.is_empty() {
                 continue;
             }
 
-            let path = if let Some((vid, pid)) = parse_vid_pid_from_device_id(device_id) {
-                format!("{vid:04x}:{pid:04x}")
-            } else if let Some(start) = name.find("COM") {
+            let path = if let Some(start) = name.find("COM") {
                 let com: String = name[start..]
                     .chars()
                     .take_while(|character| character.is_ascii_alphanumeric())
@@ -2170,7 +2175,7 @@ fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
             if seen.insert(path.to_lowercase()) {
                 printers.push(ReceiptPrinterInfo {
                     path,
-                    description: name,
+                    description: format!("Windows Serial Device - {name}"),
                 });
             }
         }
@@ -2181,35 +2186,116 @@ fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn parse_vid_pid_from_device_id(device_id: &str) -> Option<(u16, u16)> {
-    let upper = device_id.to_uppercase();
-    let vid_pos = upper.find("VID_")? + 4;
-    let pid_pos = upper.find("PID_")? + 4;
-    if vid_pos + 4 > device_id.len() || pid_pos + 4 > device_id.len() {
-        return None;
+fn discover_windows_printer_queues() -> Result<Vec<ReceiptPrinterInfo>, String> {
+    use std::{ptr, slice};
+    use winapi::shared::minwindef::{DWORD, LPBYTE};
+    use winapi::um::winspool::{
+        EnumPrintersW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
+    };
+
+    let mut needed: DWORD = 0;
+    let mut returned: DWORD = 0;
+    let flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
+
+    unsafe {
+        EnumPrintersW(
+            flags,
+            ptr::null_mut(),
+            2,
+            ptr::null_mut(),
+            0,
+            &mut needed,
+            &mut returned,
+        );
     }
-    let vid = u16::from_str_radix(&device_id[vid_pos..vid_pos + 4], 16).ok()?;
-    let pid = u16::from_str_radix(&device_id[pid_pos..pid_pos + 4], 16).ok()?;
-    Some((vid, pid))
+
+    if needed == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut buffer = vec![0u8; needed as usize];
+    let ok = unsafe {
+        EnumPrintersW(
+            flags,
+            ptr::null_mut(),
+            2,
+            buffer.as_mut_ptr() as LPBYTE,
+            needed,
+            &mut needed,
+            &mut returned,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "Windows printer enumeration failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let records = unsafe {
+        slice::from_raw_parts(buffer.as_ptr() as *const PRINTER_INFO_2W, returned as usize)
+    };
+    let mut printers = Vec::new();
+    for record in records {
+        let name = wide_ptr_to_string(record.pPrinterName);
+        if name.trim().is_empty() {
+            continue;
+        }
+
+        let port = wide_ptr_to_string(record.pPortName);
+        let usb_port = port.trim().to_uppercase().starts_with("USB");
+        if !usb_port && !is_receipt_printer_name(&name) {
+            continue;
+        }
+
+        let description = if port.trim().is_empty() {
+            format!("Windows Printer Queue - {name}")
+        } else {
+            format!("Windows Printer Queue - {name} on {port}")
+        };
+        printers.push(ReceiptPrinterInfo {
+            path: name,
+            description,
+        });
+    }
+
+    Ok(printers)
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide(value: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn wide_ptr_to_string(ptr: *const u16) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+
+    let mut len = 0usize;
+    unsafe {
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn send_raw_windows_printer(printer_name: &str, data: &[u8]) -> Result<(), String> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use winapi::shared::minwindef::DWORD;
     use winapi::um::winspool::{
         ClosePrinter, EndDocPrinter, EndPagePrinter, OpenPrinterW, StartDocPrinterW,
         StartPagePrinter, WritePrinter, DOC_INFO_1W,
     };
-
-    fn to_wide(value: &str) -> Vec<u16> {
-        OsStr::new(value)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    }
 
     let mut name_w = to_wide(printer_name);
     let mut datatype_w = to_wide("RAW");
@@ -2265,6 +2351,12 @@ fn send_raw_windows_printer(printer_name: &str, data: &[u8]) -> Result<(), Strin
                 std::io::Error::last_os_error()
             ));
         }
+        if written != data.len() as DWORD {
+            return Err(format!(
+                "WritePrinter wrote {written} of {} bytes",
+                data.len()
+            ));
+        }
     }
 
     Ok(())
@@ -2274,29 +2366,36 @@ fn send_escpos(printer_path: &str, data: &[u8]) -> Result<(), String> {
     use std::io::Write;
 
     if let Ok((vid, pid)) = parse_vid_pid(printer_path) {
-        use escpos_rs::{Printer, PrinterProfile};
-        let profile = PrinterProfile::usb_builder(vid, pid).build();
-        let printer = Printer::new(profile)
-            .map_err(|error| format!("Failed to connect to printer: {error}"))?
-            .ok_or_else(|| {
-                format!(
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (vid, pid);
+            return Err(
+                "Direct VID:PID USB printing is not supported on Windows. Select the Windows printer queue, use tcp://host[:port], or use a COM device path."
+                    .to_string(),
+            );
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            use escpos_rs::{Printer, PrinterProfile};
+            let profile = PrinterProfile::usb_builder(vid, pid).build();
+            let printer = Printer::new(profile)
+                .map_err(|error| format!("Failed to connect to printer: {error}"))?
+                .ok_or_else(|| {
+                    format!(
                     "Printer {printer_path} not found. Make sure it is connected and powered on."
                 )
-            })?;
-        return printer
-            .raw(data)
-            .map_err(|error| format!("Failed to send data to printer: {error}"));
+                })?;
+            return printer
+                .raw(data)
+                .map_err(|error| format!("Failed to send data to printer: {error}"));
+        }
     }
 
-    if looks_like_ip(printer_path) {
+    if let Some(addr) = tcp_printer_addr(printer_path) {
         use std::net::TcpStream;
         use std::time::Duration;
 
-        let addr = if printer_path.contains(':') {
-            printer_path.to_string()
-        } else {
-            format!("{printer_path}:9100")
-        };
         let mut stream = TcpStream::connect(&addr)
             .map_err(|error| format!("Cannot connect to {addr}: {error}"))?;
         stream
@@ -2349,6 +2448,41 @@ fn send_escpos(printer_path: &str, data: &[u8]) -> Result<(), String> {
     file.flush()
         .map_err(|error| format!("Flush error: {error}"))?;
     Ok(())
+}
+
+fn tcp_printer_addr(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(addr) = trimmed
+        .strip_prefix("tcp://")
+        .or_else(|| trimmed.strip_prefix("socket://"))
+    {
+        return normalize_tcp_printer_addr(addr);
+    }
+
+    if looks_like_ip(trimmed) {
+        return normalize_tcp_printer_addr(trimmed);
+    }
+
+    None
+}
+
+fn normalize_tcp_printer_addr(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some((_, port)) = trimmed.rsplit_once(':') {
+        if !port.trim().is_empty() && port.chars().all(|character| character.is_ascii_digit()) {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    Some(format!("{trimmed}:9100"))
 }
 
 #[cfg(test)]
@@ -2432,6 +2566,30 @@ mod tests {
             Path::new("/tmp/other.txt"),
             "pos.txt"
         ));
+    }
+
+    #[test]
+    fn tcp_printer_addr_defaults_ip_to_raw_print_port() {
+        assert_eq!(
+            tcp_printer_addr("192.168.1.50"),
+            Some("192.168.1.50:9100".to_string())
+        );
+        assert_eq!(
+            tcp_printer_addr("192.168.1.50:9101"),
+            Some("192.168.1.50:9101".to_string())
+        );
+    }
+
+    #[test]
+    fn tcp_printer_addr_accepts_explicit_socket_prefixes() {
+        assert_eq!(
+            tcp_printer_addr("tcp://receipt-printer"),
+            Some("receipt-printer:9100".to_string())
+        );
+        assert_eq!(
+            tcp_printer_addr("socket://receipt-printer.local:9102"),
+            Some("receipt-printer.local:9102".to_string())
+        );
     }
 }
 
