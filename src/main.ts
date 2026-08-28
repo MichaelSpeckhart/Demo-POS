@@ -7,6 +7,7 @@ import {
 } from "./exportReadiness";
 import { adapters } from "./formatters";
 import { hasCustomerData, hasExportData, hasGarmentData, hasTicketData } from "./formatters/recordPresence";
+import { renderConveyorLogPage } from "./pages/conveyorLog";
 import { renderCustomerPage } from "./pages/customer";
 import { renderDatabasePage } from "./pages/database";
 import { renderEmployeesPage } from "./pages/employees";
@@ -28,6 +29,7 @@ import type {
   ExportOperation,
   Garment,
   GarmentRecord,
+  InputFileEventRecord,
   PageId,
   ReceiptPrinterInfo,
   Ticket,
@@ -127,6 +129,7 @@ const state: AppState = {
   statusKind: "neutral",
   databaseSummary: null,
   receiptPrinters: [],
+  inputFileEvents: [],
 };
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -143,6 +146,7 @@ const pages: { id: PageId; label: string; render: (state: AppState) => string }[
   { id: "pos", label: "POS System", render: renderPosSystemPage },
   { id: "folders", label: "Folders", render: renderFoldersPage },
   { id: "printer", label: "Printer", render: renderPrinterPage },
+  { id: "conveyorLog", label: "Input Log", render: renderConveyorLogPage },
   { id: "employees", label: "Employees", render: renderEmployeesPage },
   { id: "customer", label: "Customer", render: renderCustomerPage },
   { id: "ticket", label: "Ticket", render: renderTicketPage },
@@ -206,6 +210,9 @@ function bindEvents() {
         render();
         if (page === "database") {
           void refreshDatabaseSummary();
+        }
+        if (page === "conveyorLog") {
+          void refreshInputFileEvents();
         }
       }
     });
@@ -453,6 +460,10 @@ function bindEvents() {
 
   document.querySelector<HTMLButtonElement>("[data-action='print-receipt']")?.addEventListener("click", () => {
     void printReceipt();
+  });
+
+  document.querySelector<HTMLButtonElement>("[data-action='refresh-input-log']")?.addEventListener("click", () => {
+    void refreshInputFileEvents();
   });
 
 }
@@ -1318,6 +1329,18 @@ async function refreshDatabaseSummary() {
     }
   } catch {
     state.databaseSummary = null;
+  }
+}
+
+async function refreshInputFileEvents() {
+  try {
+    state.inputFileEvents = await invoke<InputFileEventRecord[]>("load_input_file_events");
+    if (state.activePage === "conveyorLog") {
+      render();
+    }
+  } catch (error) {
+    state.inputFileEvents = [];
+    setStatus(`Input log failed: ${String(error)}`, "error");
   }
 }
 

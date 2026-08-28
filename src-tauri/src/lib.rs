@@ -250,6 +250,19 @@ struct ExportRecord {
     created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InputFileEventRecord {
+    id: i64,
+    path: String,
+    modified_at: String,
+    file_size: i64,
+    command: String,
+    status: String,
+    message: String,
+    processed_at: String,
+}
+
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
@@ -345,6 +358,17 @@ fn migrate_db(conn: &Connection) -> Result<(), String> {
 
         CREATE TABLE IF NOT EXISTS input_file_events (
             path TEXT PRIMARY KEY,
+            modified_at TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            status TEXT NOT NULL,
+            message TEXT NOT NULL,
+            processed_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS input_file_event_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
             modified_at TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             command TEXT NOT NULL,
@@ -1015,6 +1039,42 @@ fn load_export_records(conn: &Connection) -> Result<Vec<ExportRecord>, String> {
     Ok(rows)
 }
 
+#[tauri::command]
+fn load_input_file_events(app: tauri::AppHandle) -> Result<Vec<InputFileEventRecord>, String> {
+    let conn = open_db(&app)?;
+    load_input_file_event_records(&conn)
+}
+
+fn load_input_file_event_records(conn: &Connection) -> Result<Vec<InputFileEventRecord>, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, path, modified_at, file_size, command, status, message, processed_at
+            FROM input_file_event_log
+            ORDER BY id DESC
+            LIMIT 200
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(InputFileEventRecord {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                modified_at: row.get(2)?,
+                file_size: row.get(3)?,
+                command: row.get(4)?,
+                status: row.get(5)?,
+                message: row.get(6)?,
+                processed_at: row.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
 fn table_count(conn: &Connection, table: &str) -> Result<i64, String> {
     let sql = format!("SELECT COUNT(*) FROM {table}");
     conn.query_row(&sql, [], |row| row.get(0))
@@ -1084,6 +1144,7 @@ fn start_file_watch(app: tauri::AppHandle) {
         if let Err(error) = scan_input_folder_for_receipts(&app) {
             eprintln!("Receipt input watcher error: {error}");
         }
+        println!("Starting loopping\n");
         thread::sleep(Duration::from_secs(5));
     });
 }
@@ -1093,6 +1154,8 @@ fn scan_input_folder_for_receipts(app: &tauri::AppHandle) -> Result<(), String> 
     let input_directory = settings.input_directory.trim();
     let input_file_name = settings.input_file_name.trim();
     let printer_path = settings.receipt_printer_path.trim();
+
+    println!("Input Directory: {input_directory}/{input_file_name}\n");
 
     if input_directory.is_empty() || printer_path.is_empty() {
         return Ok(());
@@ -1143,6 +1206,16 @@ fn process_receipt_input_file(
     let path_string = path.to_string_lossy().to_string();
 
     if input_file_event_is_current(conn, &path_string, &modified_at, file_size)? {
+        record_input_file_event(
+            conn,
+            &path_string,
+            &modified_at,
+            file_size,
+            "",
+            "skipped",
+            "Skipped duplicate read for unchanged file.",
+        )?;
+        delete_processed_input_file(path)?;
         return Ok(());
     }
 
@@ -1158,11 +1231,12 @@ fn process_receipt_input_file(
             "ignored",
             "No RECEIPT_PRINT command found.",
         )?;
+        delete_processed_input_file(path)?;
         return Ok(());
     }
 
     let result = print_receipt_from_command(conn, printer_path, &contents);
-    match result {
+    let record_result = match result {
         Ok(ticket_number) => record_input_file_event(
             conn,
             &path_string,
@@ -1181,7 +1255,19 @@ fn process_receipt_input_file(
             "failed",
             &error,
         ),
-    }
+    };
+
+    record_result?;
+    delete_processed_input_file(path)
+}
+
+fn delete_processed_input_file(path: &Path) -> Result<(), String> {
+    fs::remove_file(path).map_err(|e| {
+        format!(
+            "Processed input file but could not delete {}: {e}",
+            path.to_string_lossy()
+        )
+    })
 }
 
 fn print_receipt_from_command(
@@ -1580,6 +1666,26 @@ fn record_input_file_event(
     status: &str,
     message: &str,
 ) -> Result<(), String> {
+    let processed_at = now_epoch_seconds();
+    conn.execute(
+        r#"
+        INSERT INTO input_file_event_log (
+            path, modified_at, file_size, command, status, message, processed_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            path,
+            modified_at,
+            file_size,
+            command,
+            status,
+            message,
+            processed_at
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
     conn.execute(
         r#"
         INSERT INTO input_file_events (
@@ -1601,7 +1707,7 @@ fn record_input_file_event(
             command,
             status,
             message,
-            now_epoch_seconds()
+            processed_at
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -2347,6 +2453,7 @@ pub fn run() {
             save_employee,
             save_workspace,
             load_database_summary,
+            load_input_file_events,
             delete_customer,
             delete_ticket,
             delete_garment,

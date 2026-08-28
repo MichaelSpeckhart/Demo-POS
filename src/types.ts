@@ -9,6 +9,7 @@ export type PageId =
   | "pos"
   | "folders"
   | "printer"
+  | "conveyorLog"
   | "employees"
   | "customer"
   | "ticket"
@@ -119,6 +120,7 @@ export interface AppState {
   statusKind: "neutral" | "success" | "error";
   databaseSummary: DatabaseSummary | null;
   receiptPrinters: ReceiptPrinterInfo[];
+  inputFileEvents: InputFileEventRecord[];
 }
 
 export interface DatabaseSummary {
@@ -188,4 +190,15 @@ export interface ExportRecord {
   filePath: string;
   payload: string;
   createdAt: string;
+}
+
+export interface InputFileEventRecord {
+  id: number;
+  path: string;
+  modifiedAt: string;
+  fileSize: number;
+  command: string;
+  status: string;
+  message: string;
+  processedAt: string;
 }
