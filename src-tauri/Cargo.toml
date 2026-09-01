@@ -29,4 +29,4 @@ escpos-rs = "0.4"
 rusb = "0.9"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3", features = ["winspool", "minwindef"] }
+winapi = { version = "0.3", features = ["fileapi", "guiddef", "handleapi", "minwindef", "setupapi", "winnt", "winspool"] }

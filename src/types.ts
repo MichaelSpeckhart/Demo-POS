@@ -25,6 +25,20 @@ export interface AppSettings {
   outputFileName: string;
   exportOperation: ExportOperation;
   receiptPrinterPath: string;
+  receiptTicketTemplate: TicketTemplateConfig;
+}
+
+export interface TicketField {
+  id: string;
+  label: string;
+  enabled: boolean;
+  showBarcode: boolean;
+}
+
+export interface TicketTemplateConfig {
+  headerText: string;
+  footerText: string;
+  fields: TicketField[];
 }
 
 export interface Customer {

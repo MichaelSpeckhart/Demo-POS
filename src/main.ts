@@ -15,7 +15,7 @@ import { renderExportPage } from "./pages/export";
 import { renderFoldersPage } from "./pages/folders";
 import { renderGarmentsPage } from "./pages/garments";
 import { renderPosSystemPage } from "./pages/posSystem";
-import { renderPrinterPage } from "./pages/printer";
+import { renderPrinterPage, renderReceiptTicketPreview } from "./pages/printer";
 import { renderTicketPage } from "./pages/ticket";
 import { resolveOutputFileName } from "./outputFileName";
 import AppLogo from "./assets/Logo1.png";
@@ -33,19 +33,85 @@ import type {
   PageId,
   ReceiptPrinterInfo,
   Ticket,
+  TicketField,
+  TicketTemplateConfig,
   TicketRecord,
   WriteExportRequest,
 } from "./types";
 
-const defaultSettings: AppSettings = {
-  posSystem: "spot",
-  inputDirectory: "",
-  inputFileName: "",
-  outputDirectory: "",
-  outputFileName: "",
-  exportOperation: "create",
-  receiptPrinterPath: "",
-};
+const receiptTicketFieldDefaults: TicketField[] = [
+  { id: "customerName", label: "Customer Name", enabled: true, showBarcode: false },
+  { id: "customerIdentifier", label: "Customer Account", enabled: true, showBarcode: false },
+  { id: "customerPhone", label: "Customer Phone", enabled: true, showBarcode: false },
+  { id: "ticketNumber", label: "Ticket Number", enabled: true, showBarcode: true },
+  { id: "invoiceNumber", label: "Invoice Number", enabled: true, showBarcode: false },
+  { id: "balanceDue", label: "Balance Due", enabled: false, showBarcode: false },
+  { id: "dropoffDate", label: "Dropoff Date", enabled: false, showBarcode: false },
+  { id: "pickupDate", label: "Pickup Date", enabled: true, showBarcode: false },
+  { id: "readyDate", label: "Ready Date", enabled: true, showBarcode: false },
+  { id: "numItems", label: "Number of Items", enabled: false, showBarcode: false },
+  { id: "itemList", label: "Garment List", enabled: true, showBarcode: false },
+  { id: "comments", label: "Comments", enabled: true, showBarcode: false },
+  { id: "ticketMessage", label: "Ticket Message", enabled: true, showBarcode: false },
+];
+
+function defaultReceiptTicketTemplate(): TicketTemplateConfig {
+  return {
+    headerText: "Demo POS",
+    footerText: "",
+    fields: receiptTicketFieldDefaults.map((field) => ({ ...field })),
+  };
+}
+
+function normalizeReceiptTicketTemplate(template?: Partial<TicketTemplateConfig>): TicketTemplateConfig {
+  if (!template) {
+    return defaultReceiptTicketTemplate();
+  }
+
+  const defaults = defaultReceiptTicketTemplate();
+  const labelById = new Map(defaults.fields.map((field) => [field.id, field.label]));
+  const seen = new Set<string>();
+  const fields: TicketField[] = [];
+
+  for (const field of template.fields ?? []) {
+    if (!labelById.has(field.id) || seen.has(field.id)) {
+      continue;
+    }
+
+    seen.add(field.id);
+    fields.push({
+      ...field,
+      label: field.label?.trim() || labelById.get(field.id) || field.id,
+      enabled: Boolean(field.enabled),
+      showBarcode: Boolean(field.showBarcode),
+    });
+  }
+
+  for (const field of defaults.fields) {
+    if (!seen.has(field.id)) {
+      fields.push({ ...field });
+    }
+  }
+
+  return {
+    headerText: template.headerText ?? defaults.headerText,
+    footerText: template.footerText ?? defaults.footerText,
+    fields,
+  };
+}
+
+function defaultAppSettings(): AppSettings {
+  return {
+    posSystem: "spot",
+    inputDirectory: "",
+    inputFileName: "",
+    outputDirectory: "",
+    outputFileName: "",
+    exportOperation: "create",
+    receiptPrinterPath: "",
+    receiptTicketTemplate: defaultReceiptTicketTemplate(),
+  };
+}
 
 function defaultCustomer(): Customer {
   return {
@@ -111,7 +177,7 @@ function blankEmployee(): Employee {
 
 const state: AppState = {
   activePage: "pos",
-  settings: { ...defaultSettings },
+  settings: defaultAppSettings(),
   customer: defaultCustomer(),
   ticket: defaultTicket(),
   garments: defaultGarments(),
@@ -462,6 +528,38 @@ function bindEvents() {
     void printReceipt();
   });
 
+  document.querySelectorAll<HTMLInputElement>("[data-action='ticket-template-text']").forEach((input) => {
+    input.addEventListener("input", () => {
+      const key = input.dataset.templateKey;
+      if (key === "headerText" || key === "footerText") {
+        state.settings.receiptTicketTemplate[key] = input.value;
+        updateReceiptTicketPreview();
+        void saveSettings();
+      }
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-action='toggle-ticket-field']").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateReceiptTicketField(button.dataset.fieldId ?? "", (field) => {
+        field.enabled = !field.enabled;
+      });
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-action='toggle-ticket-barcode']").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateReceiptTicketField(button.dataset.fieldId ?? "", (field) => {
+        field.showBarcode = !field.showBarcode;
+      });
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-action='move-ticket-field']").forEach((button) => {
+    button.addEventListener("click", () => {
+      moveReceiptTicketField(button.dataset.fieldId ?? "", Number(button.dataset.direction));
+    });
+  });
 }
 
 function bindGlobalDeleteHandler() {
@@ -548,6 +646,41 @@ function updateValue(path: string, value: string) {
       employee[key] = value;
     }
   }
+}
+
+function updateReceiptTicketField(id: string, updater: (field: TicketField) => void) {
+  const field = state.settings.receiptTicketTemplate.fields.find((ticketField) => ticketField.id === id);
+  if (!field) return;
+
+  updater(field);
+  state.status = "";
+  render();
+  void saveSettings();
+}
+
+function moveReceiptTicketField(id: string, direction: number) {
+  if (direction !== -1 && direction !== 1) return;
+
+  const fields = state.settings.receiptTicketTemplate.fields;
+  const index = fields.findIndex((field) => field.id === id);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= fields.length) return;
+
+  [fields[index], fields[nextIndex]] = [fields[nextIndex], fields[index]];
+  state.status = "";
+  render();
+  void saveSettings();
+}
+
+function updateReceiptTicketPreview() {
+  document.querySelector<HTMLElement>(".ticket-preview-panel .receipt-ticket-preview")
+    ?.replaceWith(htmlToElement(renderReceiptTicketPreview(state)));
+}
+
+function htmlToElement(markup: string) {
+  const template = document.createElement("template");
+  template.innerHTML = markup.trim();
+  return template.content.firstElementChild as HTMLElement;
 }
 
 function selectCustomerDeleteTarget(accountNumber: string) {
@@ -998,6 +1131,7 @@ async function printReceipt() {
         customer: state.customer,
         ticket: state.ticket,
         garments: state.garments,
+        receiptTicketTemplate: state.settings.receiptTicketTemplate,
       },
     });
     setStatus("Sent receipt.", "success");
@@ -1156,7 +1290,10 @@ function validateExport() {
 async function loadSettings() {
   try {
     const loaded = await invoke<Partial<AppSettings>>("load_settings");
-    state.settings = { ...defaultSettings, ...loaded };
+    state.settings = { ...defaultAppSettings(), ...loaded };
+    state.settings.receiptTicketTemplate = normalizeReceiptTicketTemplate(
+      loaded.receiptTicketTemplate
+    );
     const validPosSystems = ["spot", "wincleaners", "whiteconveyors"];
     if (!validPosSystems.includes(state.settings.posSystem)) {
       state.settings.posSystem = "spot";
@@ -1168,7 +1305,7 @@ async function loadSettings() {
       state.settings.exportOperation = "create";
     }
   } catch {
-    state.settings = { ...defaultSettings };
+    state.settings = defaultAppSettings();
   }
 }
 

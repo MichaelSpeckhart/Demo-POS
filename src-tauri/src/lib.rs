@@ -24,6 +24,8 @@ struct AppSettings {
     export_operation: String,
     #[serde(default)]
     receipt_printer_path: String,
+    #[serde(default = "default_receipt_ticket_template")]
+    receipt_ticket_template: TicketTemplateConfig,
 }
 
 impl Default for AppSettings {
@@ -36,12 +38,131 @@ impl Default for AppSettings {
             output_file_name: String::new(),
             export_operation: default_export_operation(),
             receipt_printer_path: String::new(),
+            receipt_ticket_template: default_receipt_ticket_template(),
         }
     }
 }
 
 fn default_export_operation() -> String {
     "create".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TicketField {
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    show_barcode: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TicketTemplateConfig {
+    #[serde(default = "default_receipt_header_text")]
+    header_text: String,
+    #[serde(default = "default_receipt_footer_text")]
+    footer_text: String,
+    #[serde(default = "default_receipt_ticket_fields")]
+    fields: Vec<TicketField>,
+}
+
+fn default_receipt_header_text() -> String {
+    "Demo POS".to_string()
+}
+
+fn default_receipt_footer_text() -> String {
+    String::new()
+}
+
+fn default_receipt_ticket_template() -> TicketTemplateConfig {
+    TicketTemplateConfig {
+        header_text: default_receipt_header_text(),
+        footer_text: default_receipt_footer_text(),
+        fields: default_receipt_ticket_fields(),
+    }
+}
+
+fn default_receipt_ticket_fields() -> Vec<TicketField> {
+    receipt_field_defaults()
+        .into_iter()
+        .map(|(id, label, enabled, show_barcode)| TicketField {
+            id: id.to_string(),
+            label: label.to_string(),
+            enabled,
+            show_barcode,
+        })
+        .collect()
+}
+
+fn receipt_field_defaults() -> Vec<(&'static str, &'static str, bool, bool)> {
+    vec![
+        ("customerName", "Customer Name", true, false),
+        ("customerIdentifier", "Customer Account", true, false),
+        ("customerPhone", "Customer Phone", true, false),
+        ("ticketNumber", "Ticket Number", true, true),
+        ("invoiceNumber", "Invoice Number", true, false),
+        ("balanceDue", "Balance Due", false, false),
+        ("dropoffDate", "Dropoff Date", false, false),
+        ("pickupDate", "Pickup Date", true, false),
+        ("readyDate", "Ready Date", true, false),
+        ("numItems", "Number of Items", false, false),
+        ("itemList", "Garment List", true, false),
+        ("comments", "Comments", true, false),
+        ("ticketMessage", "Ticket Message", true, false),
+    ]
+}
+
+impl AppSettings {
+    fn normalize(&mut self) {
+        self.receipt_ticket_template =
+            normalize_receipt_ticket_template(self.receipt_ticket_template.clone());
+    }
+}
+
+fn normalize_receipt_ticket_template(template: TicketTemplateConfig) -> TicketTemplateConfig {
+    let defaults = default_receipt_ticket_fields();
+    let mut seen = HashSet::new();
+    let mut fields = Vec::new();
+
+    for mut field in template.fields {
+        if !defaults.iter().any(|default| default.id == field.id) || !seen.insert(field.id.clone())
+        {
+            continue;
+        }
+        if field.label.trim().is_empty() {
+            field.label = receipt_field_label(&field.id)
+                .map(str::to_string)
+                .unwrap_or_else(|| field.id.clone());
+        }
+        fields.push(field);
+    }
+
+    for field in defaults {
+        if seen.insert(field.id.clone()) {
+            fields.push(field);
+        }
+    }
+
+    if fields.is_empty() {
+        fields = default_receipt_ticket_fields();
+    }
+
+    TicketTemplateConfig {
+        header_text: template.header_text,
+        footer_text: template.footer_text,
+        fields,
+    }
+}
+
+fn receipt_field_label(id: &str) -> Option<&'static str> {
+    receipt_field_defaults()
+        .into_iter()
+        .find(|(field_id, _, _, _)| *field_id == id)
+        .map(|(_, label, _, _)| label)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,6 +271,8 @@ struct PrintReceiptRequest {
     customer: Customer,
     ticket: Ticket,
     garments: Vec<Garment>,
+    #[serde(default = "default_receipt_ticket_template")]
+    receipt_ticket_template: TicketTemplateConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,7 +549,9 @@ fn read_settings(app: &tauri::AppHandle) -> Result<AppSettings, String> {
     }
 
     let data = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| e.to_string())
+    let mut settings: AppSettings = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    settings.normalize();
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -435,7 +560,8 @@ fn load_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
+fn save_settings(app: tauri::AppHandle, mut settings: AppSettings) -> Result<(), String> {
+    settings.normalize();
     let path = settings_path(&app)?;
     let data = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(path, data).map_err(|e| e.to_string())
@@ -1180,7 +1306,7 @@ fn scan_input_folder_for_receipts(app: &tauri::AppHandle) -> Result<(), String> 
             continue;
         }
 
-        if let Err(error) = process_receipt_input_file(&conn, printer_path, &path) {
+        if let Err(error) = process_receipt_input_file(&conn, &settings, &path) {
             eprintln!(
                 "Receipt input watcher failed for {}: {error}",
                 path.to_string_lossy()
@@ -1193,7 +1319,7 @@ fn scan_input_folder_for_receipts(app: &tauri::AppHandle) -> Result<(), String> 
 
 fn process_receipt_input_file(
     conn: &Connection,
-    printer_path: &str,
+    settings: &AppSettings,
     path: &Path,
 ) -> Result<(), String> {
     let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
@@ -1235,7 +1361,7 @@ fn process_receipt_input_file(
         return Ok(());
     }
 
-    let result = print_receipt_from_command(conn, printer_path, &contents);
+    let result = print_receipt_from_command(conn, settings, &contents);
     let record_result = match result {
         Ok(ticket_number) => record_input_file_event(
             conn,
@@ -1272,7 +1398,7 @@ fn delete_processed_input_file(path: &Path) -> Result<(), String> {
 
 fn print_receipt_from_command(
     conn: &Connection,
-    printer_path: &str,
+    settings: &AppSettings,
     contents: &str,
 ) -> Result<String, String> {
     let command = receipt_print_command(conn, contents)?;
@@ -1290,8 +1416,9 @@ fn print_receipt_from_command(
         &workspace.ticket,
         &workspace.garments,
         &command.ticket_message,
+        &settings.receipt_ticket_template,
     );
-    send_escpos(printer_path, &receipt)?;
+    send_escpos(settings.receipt_printer_path.trim(), &receipt)?;
     Ok(command.ticket_number)
 }
 
@@ -1898,12 +2025,22 @@ fn print_receipt(request: PrintReceiptRequest) -> Result<(), String> {
         return Err("Choose a receipt printer before printing.".to_string());
     }
 
-    let receipt = build_receipt(&request.customer, &request.ticket, &request.garments);
+    let receipt = build_receipt(
+        &request.customer,
+        &request.ticket,
+        &request.garments,
+        &request.receipt_ticket_template,
+    );
     send_escpos(request.printer_path.trim(), &receipt)
 }
 
-fn build_receipt(customer: &Customer, ticket: &Ticket, garments: &[Garment]) -> Vec<u8> {
-    build_receipt_with_message(customer, ticket, garments, "")
+fn build_receipt(
+    customer: &Customer,
+    ticket: &Ticket,
+    garments: &[Garment],
+    template: &TicketTemplateConfig,
+) -> Vec<u8> {
+    build_receipt_with_message(customer, ticket, garments, "", template)
 }
 
 fn build_receipt_with_message(
@@ -1911,69 +2048,177 @@ fn build_receipt_with_message(
     ticket: &Ticket,
     garments: &[Garment],
     ticket_message: &str,
+    template: &TicketTemplateConfig,
 ) -> Vec<u8> {
     let mut receipt = escpos_init();
+    let template = normalize_receipt_ticket_template(template.clone());
 
-    receipt.extend_from_slice(&[0x1B, 0x61, 0x01, 0x1B, 0x45, 0x01, 0x1D, 0x21, 0x10]);
-    receipt.extend_from_slice(b"Demo POS\n");
-    receipt.extend_from_slice(&[0x1D, 0x21, 0x00, 0x1B, 0x45, 0x00]);
-    receipt.extend_from_slice(b"------------------------------\n");
-    receipt.extend_from_slice(&[0x1B, 0x61, 0x00]);
-
-    push_receipt_line(
-        &mut receipt,
-        "Customer",
-        format!(
-            "{} {}",
-            customer.first_name.trim(),
-            customer.last_name.trim()
-        )
-        .trim(),
-    );
-    push_receipt_line(&mut receipt, "Account", customer.account_number.trim());
-    push_receipt_line(&mut receipt, "Phone", customer.phone_number.trim());
-    push_receipt_line(&mut receipt, "Ticket", ticket.ticket_number.trim());
-    push_receipt_line(
-        &mut receipt,
-        "Invoice",
-        ticket.display_invoice_number.trim(),
-    );
-    push_receipt_line(&mut receipt, "Promised", ticket.promised_date_time.trim());
-    push_receipt_line(
-        &mut receipt,
-        "Ready",
-        format!("{} {}", ticket.ready_date, ticket.ready_time).trim(),
-    );
-
-    let export_garments: Vec<&Garment> = garments
-        .iter()
-        .filter(|garment| !garment.id.trim().is_empty() || !garment.description.trim().is_empty())
-        .collect();
-    if !export_garments.is_empty() {
+    if !template.header_text.trim().is_empty() {
+        receipt.extend_from_slice(&[0x1B, 0x61, 0x01, 0x1B, 0x45, 0x01, 0x1D, 0x21, 0x10]);
+        receipt.extend_from_slice(template.header_text.trim().as_bytes());
+        receipt.push(0x0A);
+        receipt.extend_from_slice(&[0x1D, 0x21, 0x00, 0x1B, 0x45, 0x00]);
         receipt.extend_from_slice(b"------------------------------\n");
-        receipt.extend_from_slice(b"Garments\n");
-        for garment in export_garments {
-            let line = format!("{}  {}\n", garment.id.trim(), garment.description.trim());
-            receipt.extend_from_slice(line.as_bytes());
-        }
+        receipt.extend_from_slice(&[0x1B, 0x61, 0x00]);
     }
 
-    if !ticket.comments.trim().is_empty() {
-        receipt.extend_from_slice(b"------------------------------\n");
-        receipt.extend_from_slice(ticket.comments.trim().as_bytes());
-        receipt.push(0x0A);
+    for field in template.fields.iter().filter(|field| field.enabled) {
+        push_receipt_template_field(
+            &mut receipt,
+            field,
+            customer,
+            ticket,
+            garments,
+            ticket_message,
+        );
     }
 
-    if !ticket_message.trim().is_empty() {
+    if !template.footer_text.trim().is_empty() {
         receipt.extend_from_slice(b"------------------------------\n");
-        receipt.extend_from_slice(ticket_message.trim().as_bytes());
+        receipt.extend_from_slice(&[0x1B, 0x61, 0x01]);
+        receipt.extend_from_slice(template.footer_text.trim().as_bytes());
         receipt.push(0x0A);
+        receipt.extend_from_slice(&[0x1B, 0x61, 0x00]);
     }
 
     receipt.extend_from_slice(b"------------------------------\n");
     receipt.extend_from_slice(b"\n\n\n");
     receipt.extend_from_slice(&[0x1D, 0x56, 0x42, 0x03]);
     receipt
+}
+
+fn push_receipt_template_field(
+    receipt: &mut Vec<u8>,
+    field: &TicketField,
+    customer: &Customer,
+    ticket: &Ticket,
+    garments: &[Garment],
+    ticket_message: &str,
+) {
+    match field.id.as_str() {
+        "customerName" => push_receipt_line(
+            receipt,
+            "Customer",
+            format!(
+                "{} {}",
+                customer.first_name.trim(),
+                customer.last_name.trim()
+            )
+            .trim(),
+        ),
+        "customerIdentifier" => {
+            let value = if ticket.customer_account_number.trim().is_empty() {
+                customer.account_number.trim()
+            } else {
+                ticket.customer_account_number.trim()
+            };
+            push_receipt_line(receipt, "Account", value);
+            if field.show_barcode {
+                push_receipt_barcode(receipt, value);
+            }
+        }
+        "customerPhone" => push_receipt_line(receipt, "Phone", customer.phone_number.trim()),
+        "ticketNumber" => {
+            push_receipt_line(receipt, "Ticket", ticket.ticket_number.trim());
+            if field.show_barcode {
+                push_receipt_barcode(receipt, ticket.ticket_number.trim());
+            }
+        }
+        "invoiceNumber" => {
+            let value = if ticket.display_invoice_number.trim().is_empty() {
+                ticket.full_invoice_number.trim()
+            } else {
+                ticket.display_invoice_number.trim()
+            };
+            push_receipt_line(receipt, "Invoice", value);
+            if field.show_barcode {
+                push_receipt_barcode(receipt, value);
+            }
+        }
+        "balanceDue" => push_receipt_line(receipt, "Balance", ticket.balance_due.trim()),
+        "dropoffDate" => push_receipt_line(receipt, "Dropoff", ticket.dropoff_date_time.trim()),
+        "pickupDate" => push_receipt_line(receipt, "Promised", ticket.promised_date_time.trim()),
+        "readyDate" => push_receipt_line(
+            receipt,
+            "Ready",
+            format!("{} {}", ticket.ready_date, ticket.ready_time).trim(),
+        ),
+        "numItems" => {
+            let count = receipt_garments(garments).len();
+            if count > 0 {
+                let label = if count == 1 { "1 item" } else { "items" };
+                let value = if count == 1 {
+                    label.to_string()
+                } else {
+                    format!("{count} {label}")
+                };
+                push_receipt_line(receipt, "Items", &value);
+            }
+        }
+        "itemList" => push_receipt_garments(receipt, garments, field.show_barcode),
+        "comments" => push_receipt_block(receipt, ticket.comments.trim()),
+        "ticketMessage" => push_receipt_block(receipt, ticket_message.trim()),
+        _ => {}
+    }
+}
+
+fn receipt_garments(garments: &[Garment]) -> Vec<&Garment> {
+    garments
+        .iter()
+        .filter(|garment| !garment.id.trim().is_empty() || !garment.description.trim().is_empty())
+        .collect()
+}
+
+fn push_receipt_garments(receipt: &mut Vec<u8>, garments: &[Garment], show_barcode: bool) {
+    let export_garments = receipt_garments(garments);
+    if export_garments.is_empty() {
+        return;
+    }
+
+    receipt.extend_from_slice(b"------------------------------\n");
+    receipt.extend_from_slice(b"Garments\n");
+    for garment in export_garments {
+        let line = format!("{}  {}\n", garment.id.trim(), garment.description.trim());
+        receipt.extend_from_slice(line.as_bytes());
+        if show_barcode && !garment.id.trim().is_empty() {
+            push_receipt_barcode(receipt, garment.id.trim());
+        }
+    }
+}
+
+fn push_receipt_block(receipt: &mut Vec<u8>, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+
+    receipt.extend_from_slice(b"------------------------------\n");
+    receipt.extend_from_slice(value.trim().as_bytes());
+    receipt.push(0x0A);
+}
+
+fn push_receipt_barcode(receipt: &mut Vec<u8>, value: &str) {
+    let content: String = value
+        .trim()
+        .chars()
+        .filter(|character| character.is_ascii_graphic() || *character == ' ')
+        .collect();
+    if content.is_empty() {
+        return;
+    }
+
+    let barcode_data = format!("{{B{content}");
+    let Ok(length) = u8::try_from(barcode_data.len()) else {
+        return;
+    };
+
+    receipt.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    receipt.extend_from_slice(&[0x1D, 0x48, 0x02]);
+    receipt.extend_from_slice(&[0x1D, 0x68, 0x3C]);
+    receipt.extend_from_slice(&[0x1D, 0x77, 0x02]);
+    receipt.extend_from_slice(&[0x1D, 0x6B, 0x49, length]);
+    receipt.extend_from_slice(barcode_data.as_bytes());
+    receipt.push(0x0A);
+    receipt.extend_from_slice(&[0x1B, 0x61, 0x00]);
 }
 
 fn escpos_init() -> Vec<u8> {
@@ -2020,6 +2265,31 @@ fn is_receipt_printer_name(name: &str) -> bool {
         || lower.contains("citizen")
 }
 
+fn discover_known_network_receipt_printers() -> Vec<ReceiptPrinterInfo> {
+    const NETWORK_PRINTERS: &[(&str, &str)] =
+        &[("192.168.192.168:9100", "Epson Ethernet Receipt Printer")];
+
+    NETWORK_PRINTERS
+        .iter()
+        .filter_map(|(addr, description)| {
+            network_printer_is_reachable(addr).then(|| ReceiptPrinterInfo {
+                path: addr.strip_suffix(":9100").unwrap_or(addr).to_string(),
+                description: (*description).to_string(),
+            })
+        })
+        .collect()
+}
+
+fn network_printer_is_reachable(addr: &str) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+
+    let Ok(socket_addr) = addr.parse::<SocketAddr>() else {
+        return false;
+    };
+
+    TcpStream::connect_timeout(&socket_addr, Duration::from_millis(300)).is_ok()
+}
+
 #[cfg(not(target_os = "windows"))]
 fn vendor_name(vid: u16) -> &'static str {
     match vid {
@@ -2039,6 +2309,12 @@ fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
 
     let mut printers = Vec::new();
     let mut seen = HashSet::new();
+
+    for printer in discover_known_network_receipt_printers() {
+        if seen.insert(printer.path.clone()) {
+            printers.push(printer);
+        }
+    }
 
     if let Ok(entries) = fs::read_dir("/dev") {
         for entry in entries.flatten() {
@@ -2109,8 +2385,22 @@ fn discover_receipt_printers_impl() -> Result<Vec<ReceiptPrinterInfo>, String> {
     let mut printers = Vec::new();
     let mut seen = HashSet::new();
 
+    for printer in discover_known_network_receipt_printers() {
+        if seen.insert(printer.path.clone()) {
+            printers.push(printer);
+        }
+    }
+
     if let Ok(queue_printers) = discover_windows_printer_queues() {
         for printer in queue_printers {
+            if seen.insert(printer.path.to_lowercase()) {
+                printers.push(printer);
+            }
+        }
+    }
+
+    if let Ok(usb_printers) = discover_windows_usbprint_devices() {
+        for printer in usb_printers {
             if seen.insert(printer.path.to_lowercase()) {
                 printers.push(printer);
             }
@@ -2263,6 +2553,109 @@ fn discover_windows_printer_queues() -> Result<Vec<ReceiptPrinterInfo>, String> 
 }
 
 #[cfg(target_os = "windows")]
+fn discover_windows_usbprint_devices() -> Result<Vec<ReceiptPrinterInfo>, String> {
+    use std::{mem, ptr};
+    use winapi::shared::guiddef::GUID;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+    use winapi::um::setupapi::{
+        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
+        SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
+        SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+    };
+
+    const GUID_DEVINTERFACE_USBPRINT: GUID = GUID {
+        Data1: 0x28d78fad,
+        Data2: 0x5a12,
+        Data3: 0x11d1,
+        Data4: [0xae, 0x5b, 0x00, 0x00, 0xf8, 0x03, 0xa8, 0xc2],
+    };
+
+    let device_info = unsafe {
+        SetupDiGetClassDevsW(
+            &GUID_DEVINTERFACE_USBPRINT,
+            ptr::null(),
+            ptr::null_mut(),
+            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+        )
+    };
+    if device_info == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "Windows USB printer enumeration failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut printers = Vec::new();
+    let mut index: DWORD = 0;
+    loop {
+        let mut interface_data: SP_DEVICE_INTERFACE_DATA = unsafe { mem::zeroed() };
+        interface_data.cbSize = mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as DWORD;
+
+        let found = unsafe {
+            SetupDiEnumDeviceInterfaces(
+                device_info,
+                ptr::null_mut(),
+                &GUID_DEVINTERFACE_USBPRINT,
+                index,
+                &mut interface_data,
+            )
+        };
+        if found == 0 {
+            break;
+        }
+
+        let mut required_size: DWORD = 0;
+        unsafe {
+            SetupDiGetDeviceInterfaceDetailW(
+                device_info,
+                &mut interface_data,
+                ptr::null_mut(),
+                0,
+                &mut required_size,
+                ptr::null_mut(),
+            );
+        }
+
+        if required_size > 0 {
+            let mut buffer = vec![0u8; required_size as usize];
+            let detail = buffer.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+            unsafe {
+                (*detail).cbSize = mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as DWORD;
+            }
+
+            let ok = unsafe {
+                SetupDiGetDeviceInterfaceDetailW(
+                    device_info,
+                    &mut interface_data,
+                    detail,
+                    required_size,
+                    &mut required_size,
+                    ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                let path = unsafe { wide_ptr_to_string((*detail).DevicePath.as_ptr()) };
+                if !path.trim().is_empty() {
+                    printers.push(ReceiptPrinterInfo {
+                        path,
+                        description: "Windows USB Printer Device".to_string(),
+                    });
+                }
+            }
+        }
+
+        index += 1;
+    }
+
+    unsafe {
+        SetupDiDestroyDeviceInfoList(device_info);
+    }
+
+    Ok(printers)
+}
+
+#[cfg(target_os = "windows")]
 fn to_wide(value: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -2362,6 +2755,66 @@ fn send_raw_windows_printer(printer_name: &str, data: &[u8]) -> Result<(), Strin
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn send_windows_device_path(path: &str, data: &[u8]) -> Result<(), String> {
+    use std::ptr;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::fileapi::{CreateFileW, WriteFile, OPEN_EXISTING};
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::winnt::{
+        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_WRITE,
+    };
+
+    let path_w = to_wide(path);
+    let handle = unsafe {
+        CreateFileW(
+            path_w.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "Cannot open Windows device '{}': {}",
+            path,
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut written: DWORD = 0;
+    let ok = unsafe {
+        WriteFile(
+            handle,
+            data.as_ptr() as *const _,
+            data.len() as DWORD,
+            &mut written,
+            ptr::null_mut(),
+        )
+    };
+    unsafe {
+        CloseHandle(handle);
+    }
+
+    if ok == 0 {
+        return Err(format!(
+            "Windows device write failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if written != data.len() as DWORD {
+        return Err(format!(
+            "Windows device write sent {written} of {} bytes",
+            data.len()
+        ));
+    }
+
+    Ok(())
+}
+
 fn send_escpos(printer_path: &str, data: &[u8]) -> Result<(), String> {
     use std::io::Write;
 
@@ -2370,7 +2823,7 @@ fn send_escpos(printer_path: &str, data: &[u8]) -> Result<(), String> {
         {
             let _ = (vid, pid);
             return Err(
-                "Direct VID:PID USB printing is not supported on Windows. Select the Windows printer queue, use tcp://host[:port], or use a COM device path."
+                "VID:PID USB printing is not supported on Windows. Use Scan and select the Windows USB printer device, select the Windows printer queue, use tcp://host[:port], or use a COM device path."
                     .to_string(),
             );
         }
@@ -2432,22 +2885,33 @@ fn send_escpos(printer_path: &str, data: &[u8]) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let is_device_path =
-            printer_path.starts_with("\\\\.\\") || printer_path.to_uppercase().starts_with("COM");
-        if !is_device_path {
-            return send_raw_windows_printer(printer_path, data);
+        if is_windows_device_path(printer_path) {
+            return send_windows_device_path(printer_path, data);
         }
+
+        return send_raw_windows_printer(printer_path, data);
     }
 
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .open(printer_path)
-        .map_err(|error| format!("Cannot open {printer_path}: {error}"))?;
-    file.write_all(data)
-        .map_err(|error| format!("Write error: {error}"))?;
-    file.flush()
-        .map_err(|error| format!("Flush error: {error}"))?;
-    Ok(())
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(printer_path)
+            .map_err(|error| format!("Cannot open {printer_path}: {error}"))?;
+        file.write_all(data)
+            .map_err(|error| format!("Write error: {error}"))?;
+        file.flush()
+            .map_err(|error| format!("Flush error: {error}"))?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_device_path(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with(r"\\?\")
+        || trimmed.starts_with(r"\\.\")
+        || trimmed.to_uppercase().starts_with("COM")
 }
 
 fn tcp_printer_addr(value: &str) -> Option<String> {
@@ -2483,6 +2947,12 @@ fn normalize_tcp_printer_addr(value: &str) -> Option<String> {
     }
 
     Some(format!("{trimmed}:9100"))
+}
+
+fn find_printer_ip() -> Option<String> {
+    let ip_address = "";
+
+    return Some(format!("{ip_address}:9100"));
 }
 
 #[cfg(test)]
@@ -2548,6 +3018,49 @@ mod tests {
                 ticket_message: "Split ticket".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn receipt_template_controls_printed_fields() {
+        let customer = Customer {
+            account_number: "42".to_string(),
+            phone_number: "555-0100".to_string(),
+            first_name: "Ada".to_string(),
+            last_name: "Lovelace".to_string(),
+            pin: String::new(),
+            address1: String::new(),
+            address2: String::new(),
+            city: String::new(),
+            state: String::new(),
+            zip_code: String::new(),
+        };
+        let ticket = Ticket {
+            customer_account_number: "42".to_string(),
+            ticket_number: "T-100".to_string(),
+            full_invoice_number: "INV-FULL".to_string(),
+            display_invoice_number: "INV-100".to_string(),
+            balance_due: "$19.50".to_string(),
+            dropoff_date_time: "2026-09-01T09:00:00".to_string(),
+            promised_date_time: "2026-09-02T17:00:00".to_string(),
+            comments: "No starch".to_string(),
+            ready_date: "09/02/2026".to_string(),
+            ready_time: "05:00:00 PM".to_string(),
+            plant: String::new(),
+            route: String::new(),
+            route_stop: String::new(),
+            store: String::new(),
+        };
+        let mut template = default_receipt_ticket_template();
+        for field in &mut template.fields {
+            field.enabled = field.id == "balanceDue";
+        }
+
+        let receipt = build_receipt(&customer, &ticket, &[], &template);
+        let text = String::from_utf8_lossy(&receipt);
+
+        assert!(text.contains("Balance: $19.50"));
+        assert!(!text.contains("Ticket: T-100"));
+        assert!(!text.contains("Customer: Ada Lovelace"));
     }
 
     #[test]
