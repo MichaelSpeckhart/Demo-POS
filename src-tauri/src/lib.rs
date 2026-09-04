@@ -292,6 +292,21 @@ struct WorkspaceData {
     employees: Vec<Employee>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveTicketRequest {
+    customer: Customer,
+    ticket: Ticket,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveGarmentRequest {
+    ticket_number: String,
+    garment: Garment,
+    position: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DatabaseSummary {
@@ -793,6 +808,158 @@ fn save_customer(app: tauri::AppHandle, customer: Customer) -> Result<(), String
             &customer.city,
             &customer.state,
             &customer.zip_code,
+            &now,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_ticket(app: tauri::AppHandle, request: SaveTicketRequest) -> Result<(), String> {
+    if request.customer.account_number.trim().is_empty()
+        || request.ticket.ticket_number.trim().is_empty()
+    {
+        return Ok(());
+    }
+
+    let mut conn = open_db(&app)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let now = now_epoch_seconds();
+
+    tx.execute(
+        r#"
+        INSERT INTO customers (
+            account_number, phone_number, first_name, last_name, pin,
+            address1, address2, city, state, zip_code, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(account_number) DO UPDATE SET
+            phone_number = excluded.phone_number,
+            first_name = excluded.first_name,
+            last_name = excluded.last_name,
+            pin = excluded.pin,
+            address1 = excluded.address1,
+            address2 = excluded.address2,
+            city = excluded.city,
+            state = excluded.state,
+            zip_code = excluded.zip_code,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            &request.customer.account_number,
+            &request.customer.phone_number,
+            &request.customer.first_name,
+            &request.customer.last_name,
+            &request.customer.pin,
+            &request.customer.address1,
+            &request.customer.address2,
+            &request.customer.city,
+            &request.customer.state,
+            &request.customer.zip_code,
+            &now,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let ticket_customer_account_number = if request.ticket.customer_account_number.trim().is_empty()
+    {
+        request.customer.account_number.as_str()
+    } else {
+        request.ticket.customer_account_number.as_str()
+    };
+
+    tx.execute(
+        r#"
+        INSERT INTO tickets (
+            ticket_number, customer_account_number, full_invoice_number,
+            display_invoice_number, balance_due, dropoff_date_time, promised_date_time,
+            comments, ready_date, ready_time, plant, route, route_stop, store, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        ON CONFLICT(ticket_number) DO UPDATE SET
+            customer_account_number = excluded.customer_account_number,
+            full_invoice_number = excluded.full_invoice_number,
+            display_invoice_number = excluded.display_invoice_number,
+            balance_due = excluded.balance_due,
+            dropoff_date_time = excluded.dropoff_date_time,
+            promised_date_time = excluded.promised_date_time,
+            comments = excluded.comments,
+            ready_date = excluded.ready_date,
+            ready_time = excluded.ready_time,
+            plant = excluded.plant,
+            route = excluded.route,
+            route_stop = excluded.route_stop,
+            store = excluded.store,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            &request.ticket.ticket_number,
+            ticket_customer_account_number,
+            &request.ticket.full_invoice_number,
+            &request.ticket.display_invoice_number,
+            &request.ticket.balance_due,
+            &request.ticket.dropoff_date_time,
+            &request.ticket.promised_date_time,
+            &request.ticket.comments,
+            &request.ticket.ready_date,
+            &request.ticket.ready_time,
+            &request.ticket.plant,
+            &request.ticket.route,
+            &request.ticket.route_stop,
+            &request.ticket.store,
+            &now,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "INSERT INTO app_meta (key, value) VALUES ('current_ticket_number', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![&request.ticket.ticket_number],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_garment(app: tauri::AppHandle, request: SaveGarmentRequest) -> Result<(), String> {
+    if request.ticket_number.trim().is_empty() || request.garment.id.trim().is_empty() {
+        return Ok(());
+    }
+
+    let conn = open_db(&app)?;
+    let now = now_epoch_seconds();
+    conn.execute(
+        r#"
+        INSERT INTO garments (
+            ticket_number, garment_id, description, slot_occupancy,
+            service_price, service_type, garment_type, color, fabric, position, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(ticket_number, garment_id) DO UPDATE SET
+            description = excluded.description,
+            slot_occupancy = excluded.slot_occupancy,
+            service_price = excluded.service_price,
+            service_type = excluded.service_type,
+            garment_type = excluded.garment_type,
+            color = excluded.color,
+            fabric = excluded.fabric,
+            position = excluded.position,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            &request.ticket_number,
+            &request.garment.id,
+            &request.garment.description,
+            &request.garment.slot_occupancy,
+            &request.garment.service_price,
+            &request.garment.service_type,
+            &request.garment.garment_type,
+            &request.garment.color,
+            &request.garment.fabric,
+            &request.position,
             &now,
         ],
     )
@@ -1932,71 +2099,6 @@ fn clear_current_ticket_if_missing(conn: &Connection) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn choose_folder(title: Option<String>) -> Result<Option<String>, String> {
-    choose_folder_impl(title.unwrap_or_else(|| "Choose folder".to_string()))
-}
-
-#[cfg(target_os = "macos")]
-fn choose_folder_impl(title: String) -> Result<Option<String>, String> {
-    let script = format!(
-        r#"POSIX path of (choose folder with prompt "{}")"#,
-        title.replace('"', "\\\"")
-    );
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .map_err(|e| format!("Failed to open folder picker: {e}"))?;
-
-    if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok((!path.is_empty()).then_some(path));
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("User canceled") {
-        return Ok(None);
-    }
-
-    Err(stderr.trim().to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn choose_folder_impl(title: String) -> Result<Option<String>, String> {
-    let script = format!(
-        r#"$shell = New-Object -ComObject Shell.Application
-$folder = $shell.BrowseForFolder(0, '{}', 0)
-if ($folder -ne $null) {{ $folder.Self.Path }}"#,
-        title.replace('\'', "''")
-    );
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
-        .output()
-        .map_err(|e| format!("Failed to open folder picker: {e}"))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok((!path.is_empty()).then_some(path))
-}
-
-#[cfg(target_os = "linux")]
-fn choose_folder_impl(title: String) -> Result<Option<String>, String> {
-    let output = Command::new("zenity")
-        .args(["--file-selection", "--directory", "--title", &title])
-        .output()
-        .map_err(|e| format!("Failed to open folder picker: {e}"))?;
-
-    if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok((!path.is_empty()).then_some(path));
-    }
-
-    Ok(None)
-}
-
-#[tauri::command]
 fn discover_receipt_printers() -> Result<Vec<ReceiptPrinterInfo>, String> {
     discover_receipt_printers_impl()
 }
@@ -3109,6 +3211,7 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             start_file_watch(app.handle().clone());
@@ -3121,6 +3224,8 @@ pub fn run() {
             load_ticket_workspace,
             load_customer,
             save_customer,
+            save_ticket,
+            save_garment,
             save_employee,
             save_workspace,
             load_database_summary,
@@ -3130,7 +3235,6 @@ pub fn run() {
             delete_garment,
             delete_employee,
             check_folder,
-            choose_folder,
             write_export_file,
             discover_receipt_printers,
             test_print_receipt,

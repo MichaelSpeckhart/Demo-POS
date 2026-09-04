@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   customerReadyForExport,
   employeeReadyForExport,
@@ -205,7 +206,6 @@ if (!app) {
 }
 
 const appRoot = app;
-let workspaceSaveTimer: number | undefined;
 let inputLogPollTimer: number | undefined;
 let inputLogRefreshInFlight = false;
 let deleteHandlerBound = false;
@@ -329,8 +329,6 @@ function bindEvents() {
       const bindPath = input.dataset.bind ?? "";
       if (bindPath.startsWith("settings.")) {
         void saveSettings();
-      } else {
-        queueCurrentRecordSave(bindPath);
       }
     });
     input.addEventListener("change", () => {
@@ -340,8 +338,6 @@ function bindEvents() {
       updateAddToExportControls();
       if (bindPath.startsWith("settings.")) {
         void saveSettings();
-      } else {
-        void saveCurrentRecord(bindPath).then(refreshDatabaseSummary);
       }
     });
   });
@@ -376,8 +372,6 @@ function bindEvents() {
       }
       state.status = "";
       render();
-      await saveWorkspace();
-      await refreshDatabaseSummary();
     });
   });
 
@@ -449,10 +443,8 @@ function bindEvents() {
       if (!key) return;
 
       try {
-        const selected = await invoke<string | null>("choose_folder", {
-          title: key === "outputDirectory" ? "Choose POS output folder" : "Choose POS input folder",
-        });
-        if (selected) {
+        const selected = await open({ directory: true, multiple: false });
+        if (selected && typeof selected === "string") {
           state.settings[key] = selected;
           state.status = "";
           render();
@@ -497,19 +489,19 @@ function bindEvents() {
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='add-customer-to-export']")?.addEventListener("click", () => {
-    addCustomerToExport();
+    void addCustomerToExport();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='add-ticket-to-export']")?.addEventListener("click", () => {
-    addTicketToExport();
+    void addTicketToExport();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='add-garment-to-export']")?.addEventListener("click", () => {
-    addGarmentToExport();
+    void addGarmentToExport();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='add-employee-to-export']")?.addEventListener("click", () => {
-    addEmployeeToExport();
+    void addEmployeeToExport();
   });
 
   document.querySelector<HTMLButtonElement>("[data-action='export']")?.addEventListener("click", () => {
@@ -891,8 +883,8 @@ function updateAddToExportControls() {
     "add-customer-to-export",
     customerReady,
     state.customerAddedToExport && customerReady,
-    "Customer Added to Export",
-    "Add Customer to Export",
+    state.settings.posSystem === "spot" ? "Customer Ready" : "Customer Added to Export",
+    state.settings.posSystem === "spot" ? "Continue to Invoice" : "Add Customer to Export",
     "Complete Required Fields"
   );
 
@@ -903,9 +895,9 @@ function updateAddToExportControls() {
     "add-ticket-to-export",
     ticketReady,
     state.ticketAddedToExport && ticketReady,
-    `${ticketLabel} Added to Export`,
-    `Add ${ticketLabel} to Export`,
-    ticketParentReady ? "Complete Required Fields" : "Add Customer First"
+    state.settings.posSystem === "spot" ? "Invoice Ready" : `${ticketLabel} Added to Export`,
+    state.settings.posSystem === "spot" ? "Continue to Garments" : `Add ${ticketLabel} to Export`,
+    ticketParentReady ? "Complete Required Fields" : "Complete Customer First"
   );
 
   const garment = state.garments[state.selectedGarmentIndex];
@@ -951,17 +943,33 @@ function updateAddToExportButton(
   button.classList.toggle("secondary-button", !ready || added);
 }
 
-function addCustomerToExport() {
+async function addCustomerToExport() {
   if (!customerReadyForExport(state.customer, state.settings.posSystem)) {
     setStatus("Fill the required customer fields before adding the customer to export.", "error");
     return;
   }
 
-  state.customerAddedToExport = true;
-  setStatus("Customer added to export.", "success");
+  const wasAdded = state.customerAddedToExport;
+  try {
+    state.customerAddedToExport = true;
+    await saveCustomer();
+    await refreshDatabaseSummary();
+    if (state.settings.posSystem === "spot") {
+      state.ticket = state.ticketDraftActive ? state.ticket : defaultTicket(state.customer.accountNumber);
+      state.ticket.customerAccountNumber = state.customer.accountNumber;
+      state.ticketDraftActive = true;
+      state.activePage = "ticket";
+      setStatus("Customer ready for SPOT invoice.", "success");
+      return;
+    }
+    setStatus("Customer added to export.", "success");
+  } catch (error) {
+    state.customerAddedToExport = wasAdded;
+    setStatus(`Customer add failed: ${String(error)}`, "error");
+  }
 }
 
-function addTicketToExport() {
+async function addTicketToExport() {
   if (!state.customerAddedToExport || !customerReadyForExport(state.customer, state.settings.posSystem)) {
     setStatus("Add the customer to export before adding a ticket.", "error");
     return;
@@ -972,11 +980,29 @@ function addTicketToExport() {
     return;
   }
 
-  state.ticketAddedToExport = true;
-  setStatus(`${state.settings.posSystem === "spot" ? "Invoice" : "Ticket"} added to export.`, "success");
+  const wasAdded = state.ticketAddedToExport;
+  try {
+    state.ticketAddedToExport = true;
+    await saveTicket();
+    await refreshDatabaseSummary();
+    if (state.settings.posSystem === "spot") {
+      if (state.garments.length === 0) {
+        state.garments.push(blankGarment());
+        state.garmentAddedToExport.push(false);
+        state.selectedGarmentIndex = 0;
+      }
+      state.activePage = "garments";
+      setStatus("Invoice ready for SPOT garments.", "success");
+      return;
+    }
+    setStatus("Ticket added to export.", "success");
+  } catch (error) {
+    state.ticketAddedToExport = wasAdded;
+    setStatus(`${state.settings.posSystem === "spot" ? "Invoice" : "Ticket"} add failed: ${String(error)}`, "error");
+  }
 }
 
-function addGarmentToExport() {
+async function addGarmentToExport() {
   const garment = state.garments[state.selectedGarmentIndex];
   if (!garment) {
     setStatus("Create a garment before adding it to export.", "error");
@@ -993,11 +1019,25 @@ function addGarmentToExport() {
     return;
   }
 
-  state.garmentAddedToExport[state.selectedGarmentIndex] = true;
-  setStatus("Garment added to export.", "success");
+  const index = state.selectedGarmentIndex;
+  const wasAdded = state.garmentAddedToExport[index];
+  try {
+    state.garmentAddedToExport[index] = true;
+    await saveGarment(garment, index);
+    await refreshDatabaseSummary();
+    if (state.settings.posSystem === "spot") {
+      state.activePage = "export";
+      setStatus("Garment added to export.", "success");
+      return;
+    }
+    setStatus("Garment added to export.", "success");
+  } catch (error) {
+    state.garmentAddedToExport[index] = wasAdded;
+    setStatus(`Garment add failed: ${String(error)}`, "error");
+  }
 }
 
-function addEmployeeToExport() {
+async function addEmployeeToExport() {
   const employee = state.employees[state.selectedEmployeeIndex];
   if (!employee) {
     setStatus("Create an employee before adding it to export.", "error");
@@ -1009,8 +1049,17 @@ function addEmployeeToExport() {
     return;
   }
 
-  state.employeeAddedToExport[state.selectedEmployeeIndex] = true;
-  setStatus("Employee added to export.", "success");
+  const index = state.selectedEmployeeIndex;
+  const wasAdded = state.employeeAddedToExport[index];
+  try {
+    state.employeeAddedToExport[index] = true;
+    await saveSelectedEmployee();
+    await refreshDatabaseSummary();
+    setStatus("Employee added to export.", "success");
+  } catch (error) {
+    state.employeeAddedToExport[index] = wasAdded;
+    setStatus(`Employee add failed: ${String(error)}`, "error");
+  }
 }
 
 async function exportFile() {
@@ -1052,7 +1101,7 @@ async function exportFile() {
     if (isEmployeeOnlyCreateExport()) {
       await saveWhiteConveyorsEmployees(exportData.employees);
     } else if (!isDeleteExportMode()) {
-      await saveWorkspace();
+      await saveIncludedRecords(exportData);
     }
     const path = await invoke<string>("write_export_file", { request });
     await refreshDatabaseSummary();
@@ -1142,7 +1191,6 @@ async function printReceipt() {
 
 async function deleteCustomer(accountNumber: string) {
   try {
-    cancelQueuedWorkspaceSave();
     state.status = `Deleting customer ${accountNumber}...`;
     state.statusKind = "neutral";
     render();
@@ -1161,7 +1209,6 @@ async function deleteCustomer(accountNumber: string) {
 
 async function deleteTicket(ticketNumber: string) {
   try {
-    cancelQueuedWorkspaceSave();
     state.status = `Deleting ticket ${ticketNumber}...`;
     state.statusKind = "neutral";
     render();
@@ -1180,7 +1227,6 @@ async function deleteTicket(ticketNumber: string) {
 
 async function deleteGarment(ticketNumber: string, garmentId: string) {
   try {
-    cancelQueuedWorkspaceSave();
     state.status = `Deleting garment ${garmentId}...`;
     state.statusKind = "neutral";
     render();
@@ -1204,7 +1250,6 @@ async function deleteGarment(ticketNumber: string, garmentId: string) {
 
 async function deleteEmployee(employeeNumber: string) {
   try {
-    cancelQueuedWorkspaceSave();
     state.status = `Deleting employee ${employeeNumber}...`;
     state.statusKind = "neutral";
     render();
@@ -1371,11 +1416,7 @@ async function saveCustomer() {
     return;
   }
 
-  try {
-    await invoke("save_customer", { customer: state.customer });
-  } catch {
-    // Customer editing should continue even if persistence fails.
-  }
+  await invoke("save_customer", { customer: state.customer });
 }
 
 async function saveSelectedEmployee() {
@@ -1384,11 +1425,34 @@ async function saveSelectedEmployee() {
     return;
   }
 
-  try {
-    await invoke("save_employee", { employee });
-  } catch {
-    // Employee editing should continue even if persistence fails.
+  await invoke("save_employee", { employee });
+}
+
+async function saveTicket() {
+  if (!state.customer.accountNumber.trim() || !state.ticket.ticketNumber.trim()) {
+    return;
   }
+
+  await invoke("save_ticket", {
+    request: {
+      customer: state.customer,
+      ticket: state.ticket,
+    },
+  });
+}
+
+async function saveGarment(garment: Garment, position: number) {
+  if (!state.ticket.ticketNumber.trim() || !garment.id.trim()) {
+    return;
+  }
+
+  await invoke("save_garment", {
+    request: {
+      ticketNumber: state.ticket.ticketNumber,
+      garment,
+      position,
+    },
+  });
 }
 
 async function saveWhiteConveyorsEmployees(employees: Employee[]) {
@@ -1405,53 +1469,39 @@ async function saveWhiteConveyorsEmployees(employees: Employee[]) {
   }
 }
 
-async function saveWorkspace() {
-  if (!state.customer.accountNumber.trim() || !state.ticket.ticketNumber.trim()) {
+async function saveIncludedRecords(records: Pick<AppState, "customer" | "ticket" | "garments" | "employees">) {
+  if (!records.customer.accountNumber.trim() || !records.ticket.ticketNumber.trim()) {
     return;
   }
 
-  try {
-    await invoke("save_workspace", {
-      workspace: {
-        customer: state.customer,
-        ticket: state.ticket,
-        garments: state.garments,
-        employees: state.employees,
+  await invoke("save_ticket", {
+    request: {
+      customer: records.customer,
+      ticket: records.ticket,
+    },
+  });
+
+  for (const [position, garment] of records.garments.entries()) {
+    if (!garment.id.trim()) {
+      continue;
+    }
+
+    await invoke("save_garment", {
+      request: {
+        ticketNumber: records.ticket.ticketNumber,
+        garment,
+        position,
       },
     });
-  } catch {
-    // Form edits should continue even if persistence fails.
-  }
-}
-
-function queueCurrentRecordSave(path: string) {
-  window.clearTimeout(workspaceSaveTimer);
-  workspaceSaveTimer = window.setTimeout(() => {
-    void saveCurrentRecord(path).then(refreshDatabaseSummary);
-  }, 300);
-}
-
-async function saveCurrentRecord(path: string) {
-  if (isDeleteExportMode()) {
-    return;
   }
 
-  if (path.startsWith("customer.")) {
-    await saveCustomer();
-    return;
+  for (const employee of records.employees) {
+    if (!employee.employeeNumber.trim()) {
+      continue;
+    }
+
+    await invoke("save_employee", { employee });
   }
-
-  if (path.startsWith("employee.")) {
-    await saveSelectedEmployee();
-    return;
-  }
-
-  await saveWorkspace();
-}
-
-function cancelQueuedWorkspaceSave() {
-  window.clearTimeout(workspaceSaveTimer);
-  workspaceSaveTimer = undefined;
 }
 
 async function refreshDatabaseSummary() {

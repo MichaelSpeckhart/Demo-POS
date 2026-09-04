@@ -29,6 +29,8 @@ export function renderCustomerPage(state: AppState) {
 function customerForm(state: AppState, isSpot: boolean) {
   const ready = customerReadyForExport(state.customer, state.settings.posSystem);
   const added = state.customerAddedToExport && ready;
+  const addedLabel = isSpot ? "Customer Ready" : "Customer Added to Export";
+  const readyLabel = isSpot ? "Continue to Invoice" : "Add Customer to Export";
 
   return `
     <div class="form-surface">
@@ -62,7 +64,7 @@ function customerForm(state: AppState, isSpot: boolean) {
         </div>
         <div class="add-to-export-row">
           <button class="${ready && !added ? "primary-button" : "secondary-button"} add-to-export-button" data-action="add-customer-to-export" ${ready && !added ? "" : "disabled"}>
-            ${added ? "Customer Added to Export" : ready ? "Add Customer to Export" : "Complete Required Fields"}
+            ${added ? addedLabel : ready ? readyLabel : "Complete Required Fields"}
           </button>
         </div>
       </div>

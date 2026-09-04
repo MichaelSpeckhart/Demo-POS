@@ -31,6 +31,8 @@ function ticketForm(state: AppState, isSpot: boolean, isWhiteConveyors: boolean)
   const customerReady = state.customerAddedToExport && customerReadyForExport(state.customer, state.settings.posSystem);
   const ready = customerReady && ticketReadyForExport(state.ticket, state.settings.posSystem);
   const added = state.ticketAddedToExport && ready;
+  const addedLabel = isSpot ? "Invoice Ready" : `${label} Added to Export`;
+  const readyLabel = isSpot ? "Continue to Garments" : `Add ${label} to Export`;
 
   return `
     <div class="form-surface">
@@ -48,7 +50,7 @@ function ticketForm(state: AppState, isSpot: boolean, isWhiteConveyors: boolean)
         ${isSpot ? renderSpotTicketSections(state) : renderTicketSections(state, isWhiteConveyors)}
         <div class="add-to-export-row">
           <button class="${ready && !added ? "primary-button" : "secondary-button"} add-to-export-button" data-action="add-ticket-to-export" ${ready && !added ? "" : "disabled"}>
-            ${added ? `${label} Added to Export` : !customerReady ? "Add Customer First" : ready ? `Add ${label} to Export` : "Complete Required Fields"}
+            ${added ? addedLabel : !customerReady ? "Complete Customer First" : ready ? readyLabel : "Complete Required Fields"}
           </button>
         </div>
       </div>
